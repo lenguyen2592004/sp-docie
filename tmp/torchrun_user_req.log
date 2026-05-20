@@ -1,0 +1,211 @@
+W0404 18:14:32.666000 114525 site-packages/torch/distributed/run.py:851] 
+W0404 18:14:32.666000 114525 site-packages/torch/distributed/run.py:851] *****************************************
+W0404 18:14:32.666000 114525 site-packages/torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0404 18:14:32.666000 114525 site-packages/torch/distributed/run.py:851] *****************************************
+[rank: 0] Seed set to 42
+[rank: 1] Seed set to 42
+[HF] Using cache root: /workspace/tmp/hf_home
+[rank: 0] Seed set to 42
+[HF] Using cache root: /workspace/tmp/hf_home
+[rank: 1] Seed set to 43
+[ARGS] stage=train epochs=1 debug=True full_train=False full_eval=False
+[Q1] Loaded per-relation thresholds from report: filled=96/96 missing=0 (missing=>0.5)
+[Q1] Overrode params from tmp/q1_report_debug.json: k_hop=2 distant_topk=1 decision_threshold=vector
+[WARN] DGL CUDA backend not available. Running GraphExpert on CPU and keeping LLM/router/classifier on CUDA.
+Using device: cuda:0
+GPU: NVIDIA GeForce RTX 5090
+GPU Memory: 33.67 GB
+[DDP] Enabled with world_size=2, local_rank=0
+[W&B] Using project='docie-ner-re-pipeline' with API key source=argument suffix='***3bcfbc'
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: Appending key for api.wandb.ai to your netrc file: /root/.netrc
+wandb: Currently logged in as: 22520982 (21522798-uit) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 42t1rre3
+wandb: Tracking run with wandb version 0.25.1
+wandb: Run data is saved locally in /workspace/wandb/wandb/run-20260404_181447-42t1rre3
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run moe_train_20260404_181442_28a4bd06
+wandb: ⭐️ View project at https://wandb.ai/21522798-uit/docie-ner-re-pipeline
+wandb: 🚀 View run at https://wandb.ai/21522798-uit/docie-ner-re-pipeline/runs/42t1rre3
+[W&B] Initialized mode=online project=docie-ner-re-pipeline run=moe_train_20260404_181442_28a4bd06
+[W&B] Run URL: https://wandb.ai/21522798-uit/docie-ner-re-pipeline/runs/42t1rre3
+[CKPT] Removed old checkpoint dir: /workspace/checkpoints/moe_train_20260404_180625_4baa2145
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_train_20260404_181442_28a4bd06_result.json
+[RESULT] Best-checkpoint inference output: /workspace/inference_results/moe_train_20260404_181442_28a4bd06_best_ckpt_result.json
+[RESULT] Epoch evaluation log: /workspace/result_evalutation.txt
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_train_20260404_181442_28a4bd06/best_model.pt
+[CKPT] Best checkpoint for inference path: /workspace/checkpoints/moe_train_20260404_181442_28a4bd06/best_for_inference.pt
+Loading LLM... (4-bit quantization)
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 434.68it/s]
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Loading LLM... (4-bit quantization)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 325.81it/s]
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+Model device: cuda:0
+Prototypes device: cuda:0
+[DS] Mixed 6 cleaned DS docs into supervised training set
+[SPLIT] train_file split ratio=0.80 seed=42 -> train=2442 val=611
+[DATA] Train docs: 26/2442 (full=False)
+[DATA] Eval  docs: 10/611 (new val split, full=False)
+[DATA] Test docs: 10/998 (full=False)
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[LONG-TAIL] Seen relations in train: 55/96 | buckets head=16 medium=13 tail=67
+[SCHEDULE] LoRA epochs=0 | GNN epochs=1 | Total=1
+[PHASE] GNN phase active | lr=5e-05
+[BATCH] pair_batch_size=4 max=32 auto=True target_vram=0.90
+E 0 (gnn) | D 0 | L: 2.4850
+[rank1]:[E404 18:25:44.039260075 ProcessGroupNCCL.cpp:689] [Rank 1] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=209, OpType=ALLREDUCE, NumelIn=971503, NumelOut=971503, Timeout(ms)=600000) ran for 600018 milliseconds before timing out.
+[rank1]:[E404 18:25:44.041136566 ProcessGroupNCCL.cpp:2303] [PG ID 0 PG GUID 0(default_pg) Rank 1]  failure detected by watchdog at work sequence id: 209 PG status: last enqueued work: 211, last completed work: 208
+[rank1]:[E404 18:25:44.042274746 ProcessGroupNCCL.cpp:736] Stack trace of the failed collective not found, potentially because FlightRecorder is disabled. You can enable it by setting TORCH_NCCL_TRACE_BUFFER_SIZE to a non-zero value.
+[rank1]:[E404 18:25:44.042625947 ProcessGroupNCCL.cpp:2636] [PG ID 0 PG GUID 0(default_pg) Rank 1] First PG on this rank to signal dumping.
+[rank0]:[E404 18:25:44.123869395 ProcessGroupNCCL.cpp:689] [Rank 0] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=209, OpType=ALLREDUCE, NumelIn=1, NumelOut=1, Timeout(ms)=600000) ran for 600097 milliseconds before timing out.
+[rank0]:[E404 18:25:44.124272386 ProcessGroupNCCL.cpp:2303] [PG ID 0 PG GUID 0(default_pg) Rank 0]  failure detected by watchdog at work sequence id: 209 PG status: last enqueued work: 209, last completed work: 208
+[rank0]:[E404 18:25:44.125763076 ProcessGroupNCCL.cpp:733] Stack trace of the failed collective: 
+#0 all_reduce from /venv/moe/lib/python3.10/site-packages/torch/distributed/distributed_c10d.py:3068
+#1 wrapper from /venv/moe/lib/python3.10/site-packages/torch/distributed/c10d_logger.py:83
+#2 _all_reduce_int_max from /workspace/moe.py:2479
+#3 main from /workspace/moe.py:4423
+#4 <module> from /workspace/moe.py:4832
+
+[rank0]:[E404 18:25:44.125901736 ProcessGroupNCCL.cpp:2636] [PG ID 0 PG GUID 0(default_pg) Rank 0] First PG on this rank to signal dumping.
+[rank0]:[E404 18:25:44.232921887 ProcessGroupNCCL.cpp:1914] [PG ID 0 PG GUID 0(default_pg) Rank 0] Received a dump signal due to a collective timeout from this local rank and we will try our best to dump the debug info. Last enqueued NCCL work: 209, last completed NCCL work: 208.This is most likely caused by incorrect usages of collectives, e.g., wrong sizes used across ranks, the order of collectives is not same for all ranks or the scheduled collective, for some reason, didn't run. Additionally, this can be caused by GIL deadlock or other reasons such as network errors or bugs in the communications library (e.g. NCCL), etc. 
+[rank0]:[E404 18:25:44.234134768 ProcessGroupNCCL.cpp:1628] [PG ID 0 PG GUID 0(default_pg) Rank 0] ProcessGroupNCCL preparing to dump debug info. Include stack trace: 1, only active collectives: 0
+[rank1]:[E404 18:25:44.521882445 ProcessGroupNCCL.cpp:1914] [PG ID 0 PG GUID 0(default_pg) Rank 1] Received a dump signal due to a collective timeout from this local rank and we will try our best to dump the debug info. Last enqueued NCCL work: 211, last completed NCCL work: 208.This is most likely caused by incorrect usages of collectives, e.g., wrong sizes used across ranks, the order of collectives is not same for all ranks or the scheduled collective, for some reason, didn't run. Additionally, this can be caused by GIL deadlock or other reasons such as network errors or bugs in the communications library (e.g. NCCL), etc. 
+[rank1]:[E404 18:25:44.522529855 ProcessGroupNCCL.cpp:1628] [PG ID 0 PG GUID 0(default_pg) Rank 1] ProcessGroupNCCL preparing to dump debug info. Include stack trace: 1, only active collectives: 0
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 4832, in <module>
+    main()
+  File "/workspace/moe.py", line 4483, in main
+    batch_loss.backward()
+  File "/venv/moe/lib/python3.10/site-packages/torch/_tensor.py", line 631, in backward
+    torch.autograd.backward(
+  File "/venv/moe/lib/python3.10/site-packages/torch/autograd/__init__.py", line 381, in backward
+    _engine_run_backward(
+  File "/venv/moe/lib/python3.10/site-packages/torch/autograd/graph.py", line 869, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+RuntimeError: Encountered gradient which is undefined, but still allreduced by DDP reducer. This indicates a bug in DDP implementation, please report a bug with a repro to PyTorch.
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/workspace/moe.py", line 4832, in <module>
+[rank0]:     main()
+[rank0]:   File "/workspace/moe.py", line 4483, in main
+[rank0]:     batch_loss.backward()
+[rank0]:   File "/venv/moe/lib/python3.10/site-packages/torch/_tensor.py", line 631, in backward
+[rank0]:     torch.autograd.backward(
+[rank0]:   File "/venv/moe/lib/python3.10/site-packages/torch/autograd/__init__.py", line 381, in backward
+[rank0]:     _engine_run_backward(
+[rank0]:   File "/venv/moe/lib/python3.10/site-packages/torch/autograd/graph.py", line 869, in _engine_run_backward
+[rank0]:     return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+[rank0]: RuntimeError: Encountered gradient which is undefined, but still allreduced by DDP reducer. This indicates a bug in DDP implementation, please report a bug with a repro to PyTorch.
+[rank1]:[E404 18:26:44.416283505 ProcessGroupNCCL.cpp:750] [Rank 1] Some NCCL operations have failed or timed out. Due to the asynchronous nature of CUDA kernels, subsequent GPU operations might run on corrupted/incomplete data.
+[rank1]:[E404 18:26:44.416363665 ProcessGroupNCCL.cpp:764] [Rank 1] To avoid data inconsistency, we are taking the entire process down.
+[rank1]:[E404 18:26:44.417248665 ProcessGroupNCCL.cpp:2119] [PG ID 0 PG GUID 0(default_pg) Rank 1] Process group watchdog thread terminated with exception: [Rank 1] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=209, OpType=ALLREDUCE, NumelIn=971503, NumelOut=971503, Timeout(ms)=600000) ran for 600018 milliseconds before timing out.
+Exception raised from checkTimeout at /pytorch/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:692 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x78a46677305d in /venv/moe/lib/python3.10/site-packages/torch/lib/libc10.so)
+frame #1: c10d::ProcessGroupNCCL::WorkNCCL::checkTimeout(std::optional<std::chrono::duration<long, std::ratio<1l, 1000l> > >) + 0x2a7 (0x78a3b2af8ba7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #2: c10d::ProcessGroupNCCL::Watchdog::runLoop() + 0x17b1 (0x78a3b2afdfc1 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #3: c10d::ProcessGroupNCCL::Watchdog::run() + 0x157 (0x78a3b2aff3b7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #4: <unknown function> + 0xecdb4 (0x78a436e6edb4 in /lib/x86_64-linux-gnu/libstdc++.so.6)
+frame #5: <unknown function> + 0x9caa4 (0x78a467a85aa4 in /lib/x86_64-linux-gnu/libc.so.6)
+frame #6: __clone + 0x44 (0x78a467b12a64 in /lib/x86_64-linux-gnu/libc.so.6)
+
+terminate called after throwing an instance of 'c10::DistBackendError'
+  what():  [PG ID 0 PG GUID 0(default_pg) Rank 1] Process group watchdog thread terminated with exception: [Rank 1] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=209, OpType=ALLREDUCE, NumelIn=971503, NumelOut=971503, Timeout(ms)=600000) ran for 600018 milliseconds before timing out.
+Exception raised from checkTimeout at /pytorch/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:692 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x78a46677305d in /venv/moe/lib/python3.10/site-packages/torch/lib/libc10.so)
+frame #1: c10d::ProcessGroupNCCL::WorkNCCL::checkTimeout(std::optional<std::chrono::duration<long, std::ratio<1l, 1000l> > >) + 0x2a7 (0x78a3b2af8ba7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #2: c10d::ProcessGroupNCCL::Watchdog::runLoop() + 0x17b1 (0x78a3b2afdfc1 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #3: c10d::ProcessGroupNCCL::Watchdog::run() + 0x157 (0x78a3b2aff3b7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #4: <unknown function> + 0xecdb4 (0x78a436e6edb4 in /lib/x86_64-linux-gnu/libstdc++.so.6)
+frame #5: <unknown function> + 0x9caa4 (0x78a467a85aa4 in /lib/x86_64-linux-gnu/libc.so.6)
+frame #6: __clone + 0x44 (0x78a467b12a64 in /lib/x86_64-linux-gnu/libc.so.6)
+
+Exception raised from run at /pytorch/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:2125 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x78a46677305d in /venv/moe/lib/python3.10/site-packages/torch/lib/libc10.so)
+frame #1: <unknown function> + 0x68ef03 (0x78a3b2284f03 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #2: <unknown function> + 0xecdb4 (0x78a436e6edb4 in /lib/x86_64-linux-gnu/libstdc++.so.6)
+frame #3: <unknown function> + 0x9caa4 (0x78a467a85aa4 in /lib/x86_64-linux-gnu/libc.so.6)
+frame #4: __clone + 0x44 (0x78a467b12a64 in /lib/x86_64-linux-gnu/libc.so.6)
+
+[rank0]:[E404 18:26:44.638397101 ProcessGroupNCCL.cpp:750] [Rank 0] Some NCCL operations have failed or timed out. Due to the asynchronous nature of CUDA kernels, subsequent GPU operations might run on corrupted/incomplete data.
+[rank0]:[E404 18:26:44.638508041 ProcessGroupNCCL.cpp:764] [Rank 0] To avoid data inconsistency, we are taking the entire process down.
+[rank0]:[E404 18:26:44.640160412 ProcessGroupNCCL.cpp:2119] [PG ID 0 PG GUID 0(default_pg) Rank 0] Process group watchdog thread terminated with exception: [Rank 0] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=209, OpType=ALLREDUCE, NumelIn=1, NumelOut=1, Timeout(ms)=600000) ran for 600097 milliseconds before timing out.
+Exception raised from checkTimeout at /pytorch/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:692 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x714f3817305d in /venv/moe/lib/python3.10/site-packages/torch/lib/libc10.so)
+frame #1: c10d::ProcessGroupNCCL::WorkNCCL::checkTimeout(std::optional<std::chrono::duration<long, std::ratio<1l, 1000l> > >) + 0x2a7 (0x714e840f8ba7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #2: c10d::ProcessGroupNCCL::Watchdog::runLoop() + 0x17b1 (0x714e840fdfc1 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #3: c10d::ProcessGroupNCCL::Watchdog::run() + 0x157 (0x714e840ff3b7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #4: <unknown function> + 0xecdb4 (0x714f0846edb4 in /lib/x86_64-linux-gnu/libstdc++.so.6)
+frame #5: <unknown function> + 0x9caa4 (0x714f39103aa4 in /lib/x86_64-linux-gnu/libc.so.6)
+frame #6: __clone + 0x44 (0x714f39190a64 in /lib/x86_64-linux-gnu/libc.so.6)
+
+terminate called after throwing an instance of 'c10::DistBackendError'
+  what():  [PG ID 0 PG GUID 0(default_pg) Rank 0] Process group watchdog thread terminated with exception: [Rank 0] Watchdog caught collective operation timeout: WorkNCCL(SeqNum=209, OpType=ALLREDUCE, NumelIn=1, NumelOut=1, Timeout(ms)=600000) ran for 600097 milliseconds before timing out.
+Exception raised from checkTimeout at /pytorch/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:692 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x714f3817305d in /venv/moe/lib/python3.10/site-packages/torch/lib/libc10.so)
+frame #1: c10d::ProcessGroupNCCL::WorkNCCL::checkTimeout(std::optional<std::chrono::duration<long, std::ratio<1l, 1000l> > >) + 0x2a7 (0x714e840f8ba7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #2: c10d::ProcessGroupNCCL::Watchdog::runLoop() + 0x17b1 (0x714e840fdfc1 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #3: c10d::ProcessGroupNCCL::Watchdog::run() + 0x157 (0x714e840ff3b7 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #4: <unknown function> + 0xecdb4 (0x714f0846edb4 in /lib/x86_64-linux-gnu/libstdc++.so.6)
+frame #5: <unknown function> + 0x9caa4 (0x714f39103aa4 in /lib/x86_64-linux-gnu/libc.so.6)
+frame #6: __clone + 0x44 (0x714f39190a64 in /lib/x86_64-linux-gnu/libc.so.6)
+
+Exception raised from run at /pytorch/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp:2125 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x714f3817305d in /venv/moe/lib/python3.10/site-packages/torch/lib/libc10.so)
+frame #1: <unknown function> + 0x68ef03 (0x714e83884f03 in /venv/moe/lib/python3.10/site-packages/torch/lib/libtorch_cuda.so)
+frame #2: <unknown function> + 0xecdb4 (0x714f0846edb4 in /lib/x86_64-linux-gnu/libstdc++.so.6)
+frame #3: <unknown function> + 0x9caa4 (0x714f39103aa4 in /lib/x86_64-linux-gnu/libc.so.6)
+frame #4: __clone + 0x44 (0x714f39190a64 in /lib/x86_64-linux-gnu/libc.so.6)
+
+E0404 18:26:53.181000 114525 site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: -6) local_rank: 0 (pid: 114701) of binary: /venv/moe/bin/python3.10
+Traceback (most recent call last):
+  File "/venv/moe/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+  File "/venv/moe/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+  File "/venv/moe/lib/python3.10/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+  File "/venv/moe/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/venv/moe/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+=======================================================
+moe.py FAILED
+-------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-04-04_18:26:53
+  host      : 5ca7344d4739
+  rank      : 1 (local_rank: 1)
+  exitcode  : -6 (pid: 114702)
+  error_file: <N/A>
+  traceback : Signal 6 (SIGABRT) received by PID 114702
+-------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-04-04_18:26:53
+  host      : 5ca7344d4739
+  rank      : 0 (local_rank: 0)
+  exitcode  : -6 (pid: 114701)
+  error_file: <N/A>
+  traceback : Signal 6 (SIGABRT) received by PID 114701
+=======================================================

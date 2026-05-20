@@ -1,0 +1,95 @@
+Seed set to 42
+[HF] Using cache root: /workspace/tmp/hf_home
+[ARGS] stage=train epochs=1 debug=True full_train=False full_eval=False
+Using device: cuda:0
+GPU: NVIDIA GeForce RTX 5090
+GPU Memory: 33.67 GB
+[CKPT] Removed old checkpoint dir: /workspace/checkpoints/moe_train_20260515_064429_dceca43f
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_train_20260515_070128_49223f49_result.json
+[RESULT] Best-checkpoint inference output: /workspace/inference_results/moe_train_20260515_070128_49223f49_best_ckpt_result.json
+[RESULT] Epoch evaluation log: /workspace/result_evalutation.txt
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_train_20260515_070128_49223f49/best_model.pt
+[CKPT] Best checkpoint for inference path: /workspace/checkpoints/moe_train_20260515_070128_49223f49/best_for_inference.pt
+Loading LLM... (4-bit quantization)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 381.85it/s]
+[transformers] [1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+[transformers] The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+[MODEL] All modules on cuda:0 | Graph storage on cuda
+Model device: cuda:0
+[DS] Mixed 1 cleaned DS docs into supervised training set
+[SPLIT] train_file split ratio=0.80 seed=42 -> train=2442 val=611
+[DATA] Train docs: 3/2442 (full=False)
+[DATA] Eval  docs: 2/611 (new val split, full=False)
+[DATA] Test docs: 2/998 (full=False)
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[LONG-TAIL] Seen relations in train: 13/96 | buckets head=4 medium=0 tail=92
+[SCHEDULE] LoRA epochs=2 | GNN epochs=1 | Total=3
+[PHASE] LoRA phase active | trainable_lora_tensors=4 | lr=5e-05
+E 0 (lora) | D 0 | L: 0.3662
+
+Evaluating ... 2 docs
+Epoch 0 F1: 0.0008
+[EVAL] macro_f1=0.0005 tail_f1(head/med/tail)=0.0116/0.0000/0.0000 coverage=78/96
+[EVAL-OFFICIAL] RE(P/R/F1)=0.0004/0.2000/0.0008 Evidence(P/R/F1)=0.0003/0.2000/0.0007 RE_ignore_annotated(P/R/F1)=0.0000/0.2000/0.0000 RE_ignore_distant(P/R/F1)=0.0000/0.2000/0.0000
+
+Evaluating ... 2 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P19", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260515_070128_49223f49_best_ckpt_result.json (2461 items)
+[BEST-TEST-OFFICIAL] RE(P/R/F1)=0.0053/0.5417/0.0105 Evidence(P/R/F1)=0.0053/0.4222/0.0104 RE_ignore_annotated(P/R/F1)=0.0041/0.5417/0.0081 RE_ignore_distant(P/R/F1)=0.0033/0.5417/0.0065
+[BEST] Updated best checkpoint at epoch 0 | val F1=0.0008 | test F1=0.0105
+E 1 (lora) | D 0 | L: 0.3572
+
+Evaluating ... 2 docs
+Epoch 1 F1: 0.0009
+[EVAL] macro_f1=0.0005 tail_f1(head/med/tail)=0.0116/0.0000/0.0000 coverage=78/96
+[EVAL-OFFICIAL] RE(P/R/F1)=0.0004/0.2000/0.0009 Evidence(P/R/F1)=0.0003/0.2000/0.0007 RE_ignore_annotated(P/R/F1)=0.0000/0.2000/0.0000 RE_ignore_distant(P/R/F1)=0.0000/0.2000/0.0000
+
+Evaluating ... 2 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P19", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260515_070128_49223f49_best_ckpt_result.json (2397 items)
+[BEST-TEST-OFFICIAL] RE(P/R/F1)=0.0054/0.5417/0.0107 Evidence(P/R/F1)=0.0054/0.4222/0.0107 RE_ignore_annotated(P/R/F1)=0.0042/0.5417/0.0083 RE_ignore_distant(P/R/F1)=0.0033/0.5417/0.0066
+[BEST] Updated best checkpoint at epoch 1 | val F1=0.0009 | test F1=0.0107
+[PHASE] GNN phase active | lr=5e-05
+E 2 (gnn) | D 0 | L: 0.3597
+
+Evaluating ... 2 docs
+Epoch 2 F1: 0.0009
+[EVAL] macro_f1=0.0005 tail_f1(head/med/tail)=0.0116/0.0000/0.0000 coverage=75/96
+[EVAL-OFFICIAL] RE(P/R/F1)=0.0004/0.2000/0.0009 Evidence(P/R/F1)=0.0004/0.2000/0.0007 RE_ignore_annotated(P/R/F1)=0.0000/0.2000/0.0000 RE_ignore_distant(P/R/F1)=0.0000/0.2000/0.0000
+
+Evaluating ... 2 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P19", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260515_070128_49223f49_best_ckpt_result.json (2318 items)
+[BEST-TEST-OFFICIAL] RE(P/R/F1)=0.0060/0.5833/0.0120 Evidence(P/R/F1)=0.0056/0.4222/0.0111 RE_ignore_annotated(P/R/F1)=0.0048/0.5833/0.0094 RE_ignore_distant(P/R/F1)=0.0039/0.5833/0.0077
+[BEST] Updated best checkpoint at epoch 2 | val F1=0.0009 | test F1=0.0120
+
+============================================================
+[TEST] Best-checkpoint summary | epoch=2 | val F1=0.0009
+[TEST] Loaded checkpoint for inference: /workspace/checkpoints/moe_train_20260515_070128_49223f49/best_for_inference.pt
+
+Evaluating ... 2 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P19", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260515_070128_49223f49_best_ckpt_result.json (2318 items)
+[TEST] Test docs: 2 from dev.json
+[TEST] F1 (best-checkpoint): 0.0120
+[TEST] macro_f1=0.0076 tail_f1(head/med/tail)=0.1524/0.0000/0.0013 coverage=77/96
+[TEST-OFFICIAL] RE(P/R/F1)=0.0060/0.5833/0.0120 Evidence(P/R/F1)=0.0056/0.4222/0.0111 RE_ignore_annotated(P/R/F1)=0.0048/0.5833/0.0094 RE_ignore_distant(P/R/F1)=0.0039/0.5833/0.0077

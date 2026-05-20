@@ -1,0 +1,54 @@
+W0405 08:52:06.647000 62888 site-packages/torch/distributed/run.py:851] 
+W0405 08:52:06.647000 62888 site-packages/torch/distributed/run.py:851] *****************************************
+W0405 08:52:06.647000 62888 site-packages/torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0405 08:52:06.647000 62888 site-packages/torch/distributed/run.py:851] *****************************************
+[rank: 0] Seed set to 42
+[rank: 1] Seed set to 42
+[HF] Using cache root: /workspace/tmp/hf_home
+[HF] Using cache root: /workspace/tmp/hf_home
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[WARN] DGL CUDA backend not available. Running GraphExpert on CPU and keeping LLM/router/classifier on CUDA.
+Using device: cuda:0
+GPU: NVIDIA GeForce RTX 5090
+GPU Memory: 33.67 GB
+[DDP] Enabled with world_size=2, local_rank=0
+[CKPT] Removed old checkpoint dir: /workspace/checkpoints/moe_train_20260405_085002_9e4de7fd
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_q1_20260405_085228_8c0f571d_result.json
+[RESULT] Best-checkpoint inference output: /workspace/inference_results/moe_q1_20260405_085228_8c0f571d_best_ckpt_result.json
+[RESULT] Epoch evaluation log: /workspace/result_evalutation.txt
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_q1_20260405_085228_8c0f571d/best_model.pt
+[CKPT] Best checkpoint for inference path: /workspace/checkpoints/moe_q1_20260405_085228_8c0f571d/best_for_inference.pt
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[WARN] Tokenizer load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_63052_840601c5
+[WARN] Tokenizer load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_63053_6380d468
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading LLM... (4-bit quantization)
+Loading LLM... (4-bit quantization)
+[WARN] Model load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_63053_88b923f9
+[WARN] Model load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_63052_b26f30ea
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 481.63it/s]
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 485.11it/s]
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+[LLM] Enabled gradient checkpointing to reduce activation memory.
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+[GRAPH] DGL graph backend stays on CPU; experts remain on CUDA for DDP compatibility.
+Model device: cuda:0
+Prototypes device: cuda:0
+[Q1-DDP] calibration docs total=611 per-rank~306 world_size=2
+[Q1] Wrote report: /workspace/tmp/q1_report_full_2gpu_tiny.json
+[Q1] k_hop*=1 k_MIL*=1 tau*=0.4891 (fbeta=1.00)

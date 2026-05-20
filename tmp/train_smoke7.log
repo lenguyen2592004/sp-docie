@@ -1,0 +1,92 @@
+W0405 08:49:54.348000 60891 site-packages/torch/distributed/run.py:851] 
+W0405 08:49:54.348000 60891 site-packages/torch/distributed/run.py:851] *****************************************
+W0405 08:49:54.348000 60891 site-packages/torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0405 08:49:54.348000 60891 site-packages/torch/distributed/run.py:851] *****************************************
+[rank: 1] Seed set to 42
+[rank: 0] Seed set to 42
+[HF] Using cache root: /workspace/tmp/hf_home
+[HF] Using cache root: /workspace/tmp/hf_home
+[ARGS] stage=train epochs=1 debug=True full_train=False full_eval=False
+[Q1] Overrode params from tmp/q1_report_debug_2gpu_after_patch.json: k_hop=2 distant_topk=1 decision_threshold=0.4762
+[WARN] DGL CUDA backend not available. Running GraphExpert on CPU and keeping LLM/router/classifier on CUDA.
+Using device: cuda:0
+GPU: NVIDIA GeForce RTX 5090
+GPU Memory: 33.67 GB
+[DDP] Enabled with world_size=2, local_rank=0
+[CKPT] Removed old checkpoint dir: /workspace/checkpoints/moe_train_20260405_084912_605b5635
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_train_20260405_085002_9e4de7fd_result.json
+[RESULT] Best-checkpoint inference output: /workspace/inference_results/moe_train_20260405_085002_9e4de7fd_best_ckpt_result.json
+[RESULT] Epoch evaluation log: /workspace/result_evalutation.txt
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_train_20260405_085002_9e4de7fd/best_model.pt
+[CKPT] Best checkpoint for inference path: /workspace/checkpoints/moe_train_20260405_085002_9e4de7fd/best_for_inference.pt
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[WARN] Tokenizer load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_61041_688d815c
+[WARN] Tokenizer load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_61040_b0e98b9c
+Loading LLM... (4-bit quantization)
+Loading LLM... (4-bit quantization)
+[WARN] Model load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_61040_69683d35
+[WARN] Model load failed due to stale handle. Retrying with cache_dir=/workspace/tmp/hf_home_retry_61041_cf8ae73a
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 479.70it/s]
+Loading weights: 100%|██████████| 29/29 [00:00<00:00, 479.56it/s]
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+[LLM] Enabled gradient checkpointing to reduce activation memory.
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+[GRAPH] DGL graph backend stays on CPU; experts remain on CUDA for DDP compatibility.
+Model device: cuda:0
+Prototypes device: cuda:0
+[SPLIT] train_file split ratio=0.80 seed=42 -> train=2442 val=611
+[DATA] Train docs: 1/2442 (full=False)
+[DATA] Eval  docs: 1/611 (new val split, full=False)
+[DATA] Test docs: 1/998 (full=False)
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[LONG-TAIL] Seen relations in train: 4/96 | buckets head=1 medium=1 tail=94
+[SCHEDULE] LoRA epochs=0 | GNN epochs=1 | Total=1
+[PHASE] GNN phase active | lr=5e-05
+[AUTO-BATCH] enabled | init=2 cap=8 target_util=0.92 backoff=0.50
+[AUTO-BATCH] epoch=0 doc=0 peak_util=0.00 pair_batch_size 2->3
+E 0 (gnn) | D 0 | L: 4.0907
+
+Evaluating ... 1 docs
+Epoch 0 F1: 0.0000
+[EVAL] macro_f1=0.0000 tail_f1(head/med/tail)=0.0000/0.0000/0.0000 coverage=96/96
+[EVAL-OFFICIAL] RE(P/R/F1)=0.0000/0.0000/0.0000 Evidence(P/R/F1)=0.0000/0.0000/0.0000 RE_ignore_annotated(P/R/F1)=0.0000/0.0000/0.0000 RE_ignore_distant(P/R/F1)=0.0000/0.0000/0.0000
+
+Evaluating ... 1 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P6", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260405_085002_9e4de7fd_best_ckpt_result.json (1849 items)
+[BEST-TEST-OFFICIAL] RE(P/R/F1)=0.0032/0.8571/0.0065 Evidence(P/R/F1)=0.0035/0.5882/0.0069 RE_ignore_annotated(P/R/F1)=0.0022/0.8571/0.0043 RE_ignore_distant(P/R/F1)=0.0022/0.8571/0.0043
+[BEST] Updated best checkpoint at epoch 0 | val F1=0.0000 | test F1=0.0065
+
+============================================================
+[TEST] Best-checkpoint summary | epoch=0 | val F1=0.0000
+[TEST] Loaded checkpoint for inference: /workspace/checkpoints/moe_train_20260405_085002_9e4de7fd/best_for_inference.pt
+
+Evaluating ... 1 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P6", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260405_085002_9e4de7fd_best_ckpt_result.json (1849 items)
+[TEST] Test docs: 1 from dev.json
+[TEST] F1 (best-checkpoint): 0.0065
+[TEST] macro_f1=0.0045 tail_f1(head/med/tail)=0.2759/0.0000/0.0016 coverage=95/96
+[TEST-OFFICIAL] RE(P/R/F1)=0.0032/0.8571/0.0065 Evidence(P/R/F1)=0.0035/0.5882/0.0069 RE_ignore_annotated(P/R/F1)=0.0022/0.8571/0.0043 RE_ignore_distant(P/R/F1)=0.0022/0.8571/0.0043
