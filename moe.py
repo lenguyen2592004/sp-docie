@@ -433,6 +433,164 @@ def extract_marker_pair_features(outputs, encodings, e1_id, e2_id):
         mask.append(True)
     return torch.stack(feats), torch.tensor(mask, device=hidden.device)
 
+
+class EvidenceHead(nn.Module):
+    # B11: per-pair sentence-as-evidence head. Same head also drives B3 attention-distillation.
+    def __init__(self, hidden_dim, proj_dim=128, dropout=0.1):
+        super().__init__()
+        self.proj = nn.Linear(hidden_dim, proj_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(proj_dim * 5, proj_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(proj_dim, 1),
+        )
+
+    def forward(self, h_feats, t_feats, sent_feats):
+        # h_feats: (B, D), t_feats: (B, D), sent_feats: (S, D)
+        h_p = self.proj(h_feats.float())
+        t_p = self.proj(t_feats.float())
+        s_p = self.proj(sent_feats.float())
+        B = h_p.shape[0]
+        S = s_p.shape[0]
+        if S == 0 or B == 0:
+            return h_p.new_zeros((B, S))
+        h_exp = h_p.unsqueeze(1).expand(-1, S, -1)
+        t_exp = t_p.unsqueeze(1).expand(-1, S, -1)
+        s_exp = s_p.unsqueeze(0).expand(B, -1, -1)
+        x = torch.cat([h_exp, t_exp, s_exp, h_exp * t_exp, h_exp - t_exp], dim=-1)
+        return self.mlp(x).squeeze(-1)
+
+
+def compute_sentence_embeddings(doc_emb, word_ids, item):
+    """Mean-pool doc_emb tokens within each sentence span -> (S, D)."""
+    sents = item.get('sents', [])
+    if not sents:
+        return torch.zeros(0, doc_emb.shape[-1], device=doc_emb.device, dtype=doc_emb.dtype)
+    sent_offsets = [0]
+    for s in sents:
+        sent_offsets.append(sent_offsets[-1] + len(s))
+    word_to_tokens = {}
+    for tok_idx, w_idx in enumerate(word_ids):
+        if w_idx is not None:
+            word_to_tokens.setdefault(w_idx, []).append(tok_idx)
+    sent_embeds = []
+    hidden_dim = doc_emb.shape[-1]
+    for sid in range(len(sents)):
+        start, end = sent_offsets[sid], sent_offsets[sid + 1]
+        tok_indices = []
+        for w in range(start, end):
+            if w in word_to_tokens:
+                tok_indices.extend(word_to_tokens[w])
+        if tok_indices:
+            idx_t = torch.tensor(tok_indices, device=doc_emb.device)
+            pooled = torch.index_select(doc_emb, 0, idx_t).float().mean(dim=0)
+            sent_embeds.append(pooled.to(doc_emb.dtype))
+        else:
+            sent_embeds.append(torch.zeros(hidden_dim, device=doc_emb.device, dtype=doc_emb.dtype))
+    return torch.stack(sent_embeds)
+
+
+def build_evidence_targets(pairs, labels, num_sents, device):
+    """For each (h,t) pair, union of evidence sentence ids across its labels."""
+    pair_to_evi = defaultdict(set)
+    for lbl in labels:
+        try:
+            h = int(lbl.get('h', -1))
+            t = int(lbl.get('t', -1))
+        except Exception:
+            continue
+        if h < 0 or t < 0:
+            continue
+        for e in lbl.get('evidence', []) or []:
+            try:
+                e_int = int(e)
+            except Exception:
+                continue
+            if 0 <= e_int < num_sents:
+                pair_to_evi[(h, t)].add(e_int)
+    targets = torch.zeros((len(pairs), num_sents), device=device)
+    has_evi = torch.zeros(len(pairs), dtype=torch.bool, device=device)
+    for i, p in enumerate(pairs):
+        evis = pair_to_evi.get(p)
+        if evis:
+            for sid in evis:
+                targets[i, sid] = 1.0
+            has_evi[i] = True
+    return targets, has_evi
+
+
+def evidence_loss_fn(logits, targets, has_evidence, kl_weight=1.0):
+    """B11 BCE per sentence + B3 KL between softmax(logits) and normalized evidence target."""
+    if logits.numel() == 0 or not bool(has_evidence.any()):
+        return logits.new_zeros(())
+    mask = has_evidence
+    m_logits = logits[mask]
+    m_targets = targets[mask]
+    bce = F.binary_cross_entropy_with_logits(m_logits, m_targets, reduction='mean')
+    target_dist = m_targets / m_targets.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    log_pred = F.log_softmax(m_logits, dim=-1)
+    kl = F.kl_div(log_pred, target_dist, reduction='batchmean')
+    return bce + float(kl_weight) * kl
+
+
+def compute_pair_marker_features_from_doc(doc_emb, word_ids, item, pairs):
+    # A4: pool head/tail mention tokens directly from cached doc_emb instead of re-encoding.
+    vertex_set = item.get('vertex_set', item.get('vertexSet', []))
+    sents = item.get('sents', [])
+    sent_offsets = [0]
+    total = 0
+    for s in sents:
+        total += len(s)
+        sent_offsets.append(total)
+
+    def _to_global_span(m):
+        sid = int(m.get('sent_id', 0))
+        start, end = int(m['pos'][0]), int(m['pos'][1])
+        if sid < 0 or sid >= len(sent_offsets) - 1:
+            return start, end
+        base = sent_offsets[sid]
+        return base + start, base + end
+
+    word_to_tokens = {}
+    for token_idx, w_idx in enumerate(word_ids):
+        if w_idx is not None:
+            word_to_tokens.setdefault(w_idx, []).append(token_idx)
+
+    hidden_dim = doc_emb.shape[-1]
+
+    def _pool_entity(entity_mentions):
+        mention_token_idx = []
+        for m in entity_mentions:
+            start, end = _to_global_span(m)
+            for w in range(start, end):
+                if w in word_to_tokens:
+                    mention_token_idx.extend(word_to_tokens[w])
+        if not mention_token_idx:
+            return None
+        idx_t = torch.tensor(mention_token_idx, device=doc_emb.device)
+        toks = torch.index_select(doc_emb, 0, idx_t).float()
+        # LogSumExp pool to preserve signal from every mention occurrence (B4).
+        pooled = torch.logsumexp(toks, dim=0)
+        return pooled.to(doc_emb.dtype)
+
+    feats = []
+    masks = []
+    for h_idx, t_idx in pairs:
+        if h_idx >= len(vertex_set) or t_idx >= len(vertex_set):
+            feats.append(torch.zeros(hidden_dim * 2, device=doc_emb.device, dtype=doc_emb.dtype))
+            masks.append(False)
+            continue
+        h_vec = _pool_entity(vertex_set[h_idx])
+        t_vec = _pool_entity(vertex_set[t_idx])
+        if h_vec is None or t_vec is None:
+            feats.append(torch.zeros(hidden_dim * 2, device=doc_emb.device, dtype=doc_emb.dtype))
+            masks.append(False)
+        else:
+            feats.append(torch.cat([h_vec, t_vec]))
+            masks.append(True)
+    return torch.stack(feats), torch.tensor(masks, device=doc_emb.device)
+
 def collate_fn(batch, tokenizer, max_length=1024):
     """
     Collate function: tokenizes document sentences for LLM.
@@ -1122,17 +1280,19 @@ class DocREDGraphBuilder:
         doc_context = llm_embeddings.mean(0)
         for entity_idx in sorted_nodes:
             entity_mentions = vertex_set[entity_idx]
-            mention_embeds = []
+            # B4: LSE pool token embeddings of ALL mentions of this entity so multi-mention
+            # entities retain signal from every occurrence (helps inter-sentence pairs).
+            mention_token_indices = []
             for m in entity_mentions:
                 start, end = to_global_span(m)
-                mention_token_indices = []
                 for w_idx in range(start, end):
-                    if w_idx in word_to_tokens: mention_token_indices.extend(word_to_tokens[w_idx])
-                if mention_token_indices:
-                    indices_tensor = torch.tensor(mention_token_indices).to(llm_embeddings.device)
-                    mention_embeds.append(torch.index_select(llm_embeddings, 0, indices_tensor).mean(0))
-            if mention_embeds:
-                node_feats.append(torch.stack(mention_embeds).mean(0))
+                    if w_idx in word_to_tokens:
+                        mention_token_indices.extend(word_to_tokens[w_idx])
+            if mention_token_indices:
+                indices_tensor = torch.tensor(mention_token_indices, device=llm_embeddings.device)
+                tok_embeds = torch.index_select(llm_embeddings, 0, indices_tensor).float()
+                pooled = torch.logsumexp(tok_embeds, dim=0)
+                node_feats.append(pooled.to(llm_embeddings.dtype))
             else:
                 node_feats.append(doc_context)
         
@@ -1384,7 +1544,7 @@ def evaluate(input_dir, output_dir):
         output_file.close()
 
 
-def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id2rel, debug=False, debug_samples=10, batch_size=1, oracle=False, dump_path=None, candidate_gen=None, use_pair_markers=False, e1_id=None, e2_id=None, candidate_keep_ratio=0.3, threshold_scale=1.0, max_pairs_per_doc=50, args_max_length=1024, result_output_path=None, print_infer_sample=False, tail_buckets=None, train_facts_annotated=None, train_facts_distant=None):
+def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id2rel, debug=False, debug_samples=10, batch_size=1, oracle=False, dump_path=None, candidate_gen=None, use_pair_markers=False, e1_id=None, e2_id=None, candidate_keep_ratio=0.3, threshold_scale=1.0, max_pairs_per_doc=50, args_max_length=1024, result_output_path=None, print_infer_sample=False, tail_buckets=None, train_facts_annotated=None, train_facts_distant=None, mixed_precision=True, tta_bidirectional=True, tta_single_direction_penalty=0.5, evidence_threshold=0.5, evidence_topk=3):
     core_model = _unwrap_model(model)
     core_model.eval()
     pred_facts = set()
@@ -1414,8 +1574,14 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
             batch = move_batch_to_device(batch, device)
             item = batch['items'][0]
             encodings = batch['encodings']
-            outputs = core_model.llm(**encodings, output_hidden_states=True)
-            doc_embeds = outputs.hidden_states[-1][0]
+            # A8: bf16 autocast for LLM forward on CUDA; downstream (GNN) stays fp32.
+            with torch.autocast(
+                device_type=device.split(':')[0],
+                dtype=torch.bfloat16,
+                enabled=(use_cuda_eval and bool(mixed_precision)),
+            ):
+                outputs = core_model.llm(**encodings, output_hidden_states=True)
+            doc_embeds = outputs.hidden_states[-1][0].float()
             w_ids = encodings.word_ids(batch_index=0)
             
             vertex_set = item.get('vertex_set', item.get('vertexSet', []))
@@ -1443,18 +1609,41 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
             doc_results = {"doc_id": item.get('title', 'unknown'), "entity_pairs": []}
             pair_batch_size = 10
             decision_threshold = min(0.95, max(0.05, 0.5 * float(threshold_scale)))
+
+            # A4: precompute pair-marker features once per doc via span pooling.
+            doc_marker_feats = None
+            doc_marker_mask = None
+            pair_to_idx = {pair: idx for idx, pair in enumerate(entity_pairs)}
+            if use_pair_markers:
+                doc_marker_feats, doc_marker_mask = compute_pair_marker_features_from_doc(
+                    doc_embeds, w_ids, item, entity_pairs
+                )
+
+            # B3 + B11: per-doc sentence embeddings for the evidence head.
+            sent_embeds = compute_sentence_embeddings(doc_embeds, w_ids, item)
+            evidence_head_avail = (
+                hasattr(core_model, 'evidence_head')
+                and sent_embeds.shape[0] > 0
+            )
+
+            # Doc-level accumulators (deferred emission for B7 bidirectional merging).
+            doc_prob_map = {}          # (h, t, rel_id) -> sigmoid prob
+            doc_evi_probs = {}         # (h, t) -> np.array(S,) evidence prob per sentence
+
             for p_start in range(0, len(entity_pairs), pair_batch_size):
                 p_end = min(p_start + pair_batch_size, len(entity_pairs))
                 batch_pairs = entity_pairs[p_start:p_end]
                 subgraphs, pair_features = [], []
+                h_only_feats, t_only_feats = [], []
                 path_infos = []
                 marker_feats = None
                 marker_mask = None
-                if use_pair_markers:
-                    pair_items = build_pair_batch_items(item, batch_pairs)
-                    pair_enc = collate_fn(pair_items, tokenizer, max_length=args_max_length)['encodings'].to(device)
-                    pair_out = core_model.llm(**pair_enc, output_hidden_states=True)
-                    marker_feats, marker_mask = extract_marker_pair_features(pair_out, pair_enc, e1_id, e2_id)
+                if use_pair_markers and doc_marker_feats is not None:
+                    batch_idx = torch.tensor(
+                        [pair_to_idx[p] for p in batch_pairs], device=doc_marker_feats.device
+                    )
+                    marker_feats = torch.index_select(doc_marker_feats, 0, batch_idx)
+                    marker_mask = torch.index_select(doc_marker_mask, 0, batch_idx)
                 for h_idx, t_idx in batch_pairs:
                     g, _, _, path_info = graph_builder.build_pair_subgraph(item, doc_embeds, w_ids, h_idx, t_idx)
                     subgraphs.append(g)
@@ -1462,63 +1651,115 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
                     ht_feats = g.ndata['h'][g.ndata['is_ht'].bool()]
                     h_f, t_f = (ht_feats[0], ht_feats[1]) if ht_feats.shape[0] >= 2 else (ht_feats[0], ht_feats[0])
                     pair_features.append(torch.cat([h_f, t_f]))
+                    h_only_feats.append(h_f)
+                    t_only_feats.append(t_f)
 
                 if use_pair_markers and marker_feats is not None:
                     for idx in range(len(pair_features)):
                         if marker_mask[idx]:
                             marker_vec = marker_feats[idx].to(pair_features[idx].device)
                             pair_features[idx] = 0.5 * pair_features[idx] + 0.5 * marker_vec
-                
+
                 logits = core_model(dgl.batch(subgraphs), torch.stack(pair_features).to(device), path_infos)[0]
 
                 # Type-constrained soft mask (B1)
                 type_mask = build_type_soft_mask(batch_pairs, vertex_set, rel2id, device)
                 logits = logits + type_mask
 
-                preds_tensor, probs_tensor, _ = predict_multi_label_relations(
-                    logits,
-                    threshold=decision_threshold,
-                )
-                probs_batch = probs_tensor.float().cpu().numpy()
-                preds_batch = preds_tensor.cpu().numpy().astype(bool)
-                
+                probs_tensor = torch.sigmoid(logits.float())
+                probs_batch = probs_tensor.cpu().numpy()
+
                 for j, pair in enumerate(batch_pairs):
-                    pred_rel_ids = np.where(preds_batch[j])[0].tolist()
-                    for rel_id in pred_rel_ids:
-                        pred_facts.add((doc_idx, int(pair[0]), int(pair[1]), int(rel_id)))
-                        pred_item = {
-                            "title": item.get('title', 'unknown'),
-                            "h_idx": int(pair[0]),
-                            "t_idx": int(pair[1]),
-                            "r": id2rel[int(rel_id)],
-                            "evidence": infer_pair_evidence_sent_ids(item, int(pair[0]), int(pair[1])),
-                        }
-                        infer_results.append(pred_item)
-                        if print_infer_sample and not printed_output_sample:
-                            print("[INFER-DEBUG] Output sample after inference:")
-                            print(json.dumps(pred_item, ensure_ascii=False))
-                            printed_output_sample = True
+                    for rel_id in range(probs_batch.shape[1]):
+                        doc_prob_map[(int(pair[0]), int(pair[1]), int(rel_id))] = float(probs_batch[j, rel_id])
 
-                    if print_infer_sample and not printed_input_sample:
-                        sample_input = {
-                            "title": item.get('title', 'unknown'),
-                            "h_idx": int(pair[0]),
-                            "t_idx": int(pair[1]),
-                            "r": "NA",
-                            "evidence": infer_pair_evidence_sent_ids(item, int(pair[0]), int(pair[1])),
-                        }
-                        print("[INFER-DEBUG] Input sample before inference:")
-                        print(json.dumps(sample_input, ensure_ascii=False))
-                        printed_input_sample = True
+                # B11: evidence head predictions per pair (sentence relevance).
+                if evidence_head_avail:
+                    h_batch_t = torch.stack(h_only_feats).to(device)
+                    t_batch_t = torch.stack(t_only_feats).to(device)
+                    evi_logits_b = core_model.evidence_head(h_batch_t, t_batch_t, sent_embeds)
+                    evi_probs_b = torch.sigmoid(evi_logits_b).float().cpu().numpy()
+                    for j, pair in enumerate(batch_pairs):
+                        doc_evi_probs[(int(pair[0]), int(pair[1]))] = evi_probs_b[j]
 
-                    if len(dump_results) < 5:
-                        gold_rel_ids = sorted(pair_to_rels.get(pair, set()))
-                        doc_results["entity_pairs"].append({
-                            "h": vertex_set[pair[0]][0]['name'],
-                            "t": vertex_set[pair[1]][0]['name'],
-                            "gold": [id2rel[g] for g in gold_rel_ids],
-                            "pred": [id2rel[p] for p in pred_rel_ids],
-                        })
+            # B7: bidirectional probability merging + emission.
+            def _inverse_rel_id(rel_id):
+                rel_name = id2rel.get(int(rel_id), "")
+                if rel_name in SYMMETRIC_RELATIONS:
+                    return int(rel_id)
+                for a, b in INVERSE_PAIRS:
+                    if rel_name == a and b in rel2id:
+                        return int(rel2id[b])
+                    if rel_name == b and a in rel2id:
+                        return int(rel2id[a])
+                return None
+
+            def _evidence_for_pair(h, t):
+                evi_arr = doc_evi_probs.get((h, t))
+                if evi_arr is None or len(evi_arr) == 0:
+                    return infer_pair_evidence_sent_ids(item, h, t)
+                above = [(i, float(p)) for i, p in enumerate(evi_arr) if float(p) >= float(evidence_threshold)]
+                above.sort(key=lambda x: -x[1])
+                if not above and len(evi_arr) > 0:
+                    above = [(int(evi_arr.argmax()), float(evi_arr.max()))]
+                return [i for i, _ in above[: max(1, int(evidence_topk))]]
+
+            pair_pred_rel_ids = defaultdict(list)
+            for (h, t, rel_id), prob in doc_prob_map.items():
+                inv_rel_id = _inverse_rel_id(rel_id)
+                if tta_bidirectional and inv_rel_id is not None:
+                    inv_prob = float(doc_prob_map.get((t, h, inv_rel_id), 0.0))
+                    if prob >= decision_threshold and inv_prob >= decision_threshold:
+                        merged = 0.5 * (prob + inv_prob)
+                    else:
+                        merged = max(prob, inv_prob) * float(tta_single_direction_penalty)
+                    keep = merged >= decision_threshold
+                else:
+                    keep = prob >= decision_threshold
+
+                if not keep:
+                    continue
+
+                pred_facts.add((doc_idx, int(h), int(t), int(rel_id)))
+                pair_pred_rel_ids[(int(h), int(t))].append(int(rel_id))
+                pred_item = {
+                    "title": item.get('title', 'unknown'),
+                    "h_idx": int(h),
+                    "t_idx": int(t),
+                    "r": id2rel[int(rel_id)],
+                    "evidence": _evidence_for_pair(int(h), int(t)),
+                }
+                infer_results.append(pred_item)
+                if print_infer_sample and not printed_output_sample:
+                    print("[INFER-DEBUG] Output sample after inference:")
+                    print(json.dumps(pred_item, ensure_ascii=False))
+                    printed_output_sample = True
+
+            if print_infer_sample and not printed_input_sample and entity_pairs:
+                first_pair = entity_pairs[0]
+                sample_input = {
+                    "title": item.get('title', 'unknown'),
+                    "h_idx": int(first_pair[0]),
+                    "t_idx": int(first_pair[1]),
+                    "r": "NA",
+                    "evidence": _evidence_for_pair(int(first_pair[0]), int(first_pair[1])),
+                }
+                print("[INFER-DEBUG] Input sample before inference:")
+                print(json.dumps(sample_input, ensure_ascii=False))
+                printed_input_sample = True
+
+            if len(dump_results) < 5:
+                for pair in entity_pairs:
+                    pred_rel_ids = pair_pred_rel_ids.get((int(pair[0]), int(pair[1])), [])
+                    if not pred_rel_ids and not pair_to_rels.get(pair):
+                        continue
+                    gold_rel_ids = sorted(pair_to_rels.get(pair, set()))
+                    doc_results["entity_pairs"].append({
+                        "h": vertex_set[pair[0]][0]['name'],
+                        "t": vertex_set[pair[1]][0]['name'],
+                        "gold": [id2rel[g] for g in gold_rel_ids],
+                        "pred": [id2rel[p] for p in pred_rel_ids],
+                    })
             if doc_results["entity_pairs"]:
                 dump_results.append(doc_results)
 
@@ -1534,22 +1775,25 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
         print("[INFER-DEBUG] Output sample after inference:")
         print(json.dumps({"title": "N/A", "h_idx": -1, "t_idx": -1, "r": "NA", "evidence": []}, ensure_ascii=False))
 
-    # Symmetric relation post-processing (B6)
-    extra_facts = set()
-    for doc_idx, h, t, rel_id in pred_facts:
-        rel_name = id2rel.get(int(rel_id), "")
-        if rel_name in SYMMETRIC_RELATIONS:
-            extra_facts.add((doc_idx, t, h, rel_id))
-        for a, b in INVERSE_PAIRS:
-            if rel_name == a:
-                inv_id = rel2id.get(b)
-                if inv_id is not None:
-                    extra_facts.add((doc_idx, t, h, inv_id))
-            elif rel_name == b:
-                inv_id = rel2id.get(a)
-                if inv_id is not None:
-                    extra_facts.add((doc_idx, t, h, inv_id))
-    pred_facts = pred_facts.union(extra_facts)
+    # Symmetric relation post-processing (B6) — skip when B7 bidirectional merging is on,
+    # because B7 already considers both directions and naive expansion would undo its
+    # single-direction penalty.
+    if not tta_bidirectional:
+        extra_facts = set()
+        for doc_idx, h, t, rel_id in pred_facts:
+            rel_name = id2rel.get(int(rel_id), "")
+            if rel_name in SYMMETRIC_RELATIONS:
+                extra_facts.add((doc_idx, t, h, rel_id))
+            for a, b in INVERSE_PAIRS:
+                if rel_name == a:
+                    inv_id = rel2id.get(b)
+                    if inv_id is not None:
+                        extra_facts.add((doc_idx, t, h, inv_id))
+                elif rel_name == b:
+                    inv_id = rel2id.get(a)
+                    if inv_id is not None:
+                        extra_facts.add((doc_idx, t, h, inv_id))
+        pred_facts = pred_facts.union(extra_facts)
 
     precision, recall, f1 = compute_fact_f1(pred_facts, gold_facts)
     long_tail_metrics = compute_long_tail_metrics(
@@ -1701,6 +1945,16 @@ def main():
     parser.add_argument('--adopt-eps', type=float, default=1e-6, help='ADOPT epsilon.')
     parser.add_argument('--neg-pos-ratio', type=float, default=3.0, help='Target negative-to-positive ratio per document for pair training.')
     parser.add_argument('--neg-buffer', type=int, default=5, help='Extra negative pairs sampled per document.')
+
+    # Evidence supervision (B3 attention-distillation + B11 sentence-as-evidence multi-task)
+    parser.add_argument('--lambda-evidence', type=float, default=0.1, help='Weight on evidence auxiliary loss (BCE + KL). 0 disables the evidence head.')
+    parser.add_argument('--evidence-kl-weight', type=float, default=1.0, help='Weight on the KL attention-distillation term inside evidence loss.')
+    parser.add_argument('--evidence-threshold', type=float, default=0.5, help='Sigmoid threshold for selecting evidence sentences at inference.')
+    parser.add_argument('--evidence-topk', type=int, default=3, help='Max evidence sentences kept per predicted (h,t,r) at inference.')
+
+    # Test-time augmentation (B7): bidirectional probability merging
+    parser.add_argument('--tta-bidirectional', action='store_true', default=True, help='Merge (h,t,r) and (t,h,inv(r)) scores at inference.')
+    parser.add_argument('--tta-single-direction-penalty', type=float, default=0.5, help='Multiplier applied when only one direction has a confident score (B7).')
     
     # Early stopping parameters
     parser.add_argument('--patience', type=int, default=5, help='Number of epochs to wait for F1 improvement before stopping.')
@@ -2481,6 +2735,13 @@ def main():
         if rank == 0:
             print(f"[MODEL] All modules on {DEVICE} | Graph storage on {graph_device}")
 
+    # B3 + B11: evidence supervision head (per-pair, per-sentence). Attached before DDP wrap
+    # so its parameters are visible to all ranks and the optimizer.
+    llm_hidden_dim = int(model.llm.config.hidden_size)
+    model.evidence_head = EvidenceHead(hidden_dim=llm_hidden_dim).to(DEVICE)
+    if rank == 0:
+        print(f"[EVIDENCE] EvidenceHead attached | hidden_dim={llm_hidden_dim}")
+
     def _load_checkpoint_into_modules(checkpoint_path, strict=False):
         ckpt = torch.load(checkpoint_path, map_location=DEVICE)
         loaded_any = False
@@ -2521,7 +2782,20 @@ def main():
             state_dict = ckpt["model_state_dict"]
             if strict:
                 state_dict = _try_rename(state_dict)
-            result = model.load_state_dict(state_dict, strict=bool(strict))
+            # Strict load, but tolerate genuinely new heads added after the checkpoint
+            # (e.g. evidence_head from B3/B11) — they get random init.
+            result = model.load_state_dict(state_dict, strict=False)
+            if strict:
+                missing = list(getattr(result, "missing_keys", []))
+                unexpected = list(getattr(result, "unexpected_keys", []))
+                ALLOW_MISSING_PREFIXES = ("evidence_head.",)
+                hard_missing = [k for k in missing if not k.startswith(ALLOW_MISSING_PREFIXES)]
+                if hard_missing or unexpected:
+                    raise RuntimeError(
+                        f"[PRETRAIN] Strict load mismatch: missing={hard_missing} unexpected={unexpected}"
+                    )
+                if missing and rank == 0:
+                    print(f"[PRETRAIN] Allowed-missing keys (new heads): {missing}")
             _report("full model", result)
             loaded_any = True
 
@@ -2589,6 +2863,10 @@ def main():
             phase_lr = args.lr_gnn
             if rank == 0:
                 print(f"[PHASE] GNN phase active | lr={phase_lr}")
+
+        # Evidence head stays trainable in both phases (B3 + B11 auxiliary supervision).
+        if hasattr(core, 'evidence_head'):
+            _set_module_requires_grad(core.evidence_head, True)
 
         trainable = [p for p in model.parameters() if p.requires_grad]
         if not trainable:
@@ -2940,9 +3218,19 @@ def main():
             item = batch['items'][0]
             core_model = _unwrap_model(model)
 
-            # Layer 1-2: LLM Encoder (frozen + LoRA) → Entity mention embeddings
-            doc_emb = core_model.llm(**enc, output_hidden_states=True).hidden_states[-1][0]
+            # Layer 1-2: LLM Encoder (frozen + LoRA) → Entity mention embeddings.
+            # A8: run LLM under bf16 autocast; GNN/classifier stay in fp32 outside this block.
+            with torch.autocast(
+                device_type=DEVICE.split(':')[0],
+                dtype=torch.bfloat16,
+                enabled=(use_cuda and args.mixed_precision),
+            ):
+                doc_emb = core_model.llm(**enc, output_hidden_states=True).hidden_states[-1][0]
+            doc_emb = doc_emb.float()
             w_ids = enc.word_ids(0)
+
+            # B3 + B11: sentence-level embeddings, cached once per doc for the evidence head.
+            sent_embeds = compute_sentence_embeddings(doc_emb, w_ids, item)
 
             vertex_set = item.get('vertex_set', item.get('vertexSet', []))
             candidates = candidate_gen.generate_candidates(item, vertex_set)
@@ -2992,19 +3280,14 @@ def main():
             doc_loss = 0.0
             num_accum = 0
 
-            # Precompute marker features for all pairs in doc if using pair markers (A4 optimization)
+            # A4: compute pair-marker features once via span pooling on cached doc_emb.
             doc_marker_feats = None
             doc_marker_mask = None
             pair_to_idx = {pair: idx for idx, pair in enumerate(train_p)}
             if use_pair_markers:
-                all_pair_items = build_pair_batch_items(item, train_p)
-                all_pair_enc = collate_fn(all_pair_items, tokenizer, max_length=args.max_seq_length)['encodings'].to(DEVICE)
-                with torch.autocast(device_type=DEVICE.split(':')[0], dtype=torch.bfloat16, enabled=(use_cuda and args.mixed_precision)):
-                    all_pair_out = core_model.llm(**all_pair_enc, output_hidden_states=True)
-                doc_marker_feats, doc_marker_mask = extract_marker_pair_features(all_pair_out, all_pair_enc, e1_id, e2_id)
-                del all_pair_out, all_pair_enc
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                doc_marker_feats, doc_marker_mask = compute_pair_marker_features_from_doc(
+                    doc_emb, w_ids, item, train_p
+                )
 
             # Layer 3: Pair subgraph construction (k-hop neighborhoods)
             pair_batch_size = max(1, args.batch_size)
@@ -3014,6 +3297,7 @@ def main():
                 b_p = train_p[p_s:p_e]
                 b_l = build_multi_hot_targets(b_p, pair_to_rels, num_relations, DEVICE)
                 sgs, path_infos, p_f = [], [], []
+                h_only_feats, t_only_feats = [], []
                 try:
                     for h, t in b_p:
                         g, _, _, path_info = graph_builder.build_pair_subgraph(item, doc_emb, w_ids, h, t)
@@ -3022,6 +3306,8 @@ def main():
                         ht = g.ndata['h'][g.ndata['is_ht'].bool()]
                         h_f, t_f = (ht[0], ht[1]) if ht.shape[0] >= 2 else (ht[0], ht[0])
                         p_f.append(torch.cat([h_f, t_f]))
+                        h_only_feats.append(h_f)
+                        t_only_feats.append(t_f)
 
                     if use_pair_markers and doc_marker_feats is not None:
                         for idx, pair in enumerate(b_p):
@@ -3055,8 +3341,29 @@ def main():
                     # Sparsity linear warmup (A5)
                     beta_t = args.beta_sparsity if epoch >= args.sparsity_warmup_epochs else (args.beta_sparsity * max(1, epoch) / max(1, args.sparsity_warmup_epochs))
 
-                    # Total Loss = ds_weight * L_CE + β_t * L_sparsity
-                    batch_loss = ds_weight * cls_loss + beta_t * sparsity
+                    # Loss 3: B3 attention-distillation + B11 BCE per-sentence on evidence.
+                    # Always run evidence_head so DDP (find_unused_parameters=False) sees its
+                    # params used; mask the loss when lambda=0 or for distant-supervision docs
+                    # (their evidence is unreliable).
+                    if sent_embeds.shape[0] > 0:
+                        h_batch = torch.stack(h_only_feats).to(DEVICE)
+                        t_batch = torch.stack(t_only_feats).to(DEVICE)
+                        evi_logits = core_model.evidence_head(h_batch, t_batch, sent_embeds)
+                        if float(args.lambda_evidence) > 0.0 and not item.get("__is_distant"):
+                            evi_targets, has_evi = build_evidence_targets(
+                                b_p, item.get('labels', []), sent_embeds.shape[0], DEVICE
+                            )
+                            evi_loss = evidence_loss_fn(
+                                evi_logits, evi_targets, has_evi, kl_weight=float(args.evidence_kl_weight)
+                            )
+                        else:
+                            # Keep evi_logits in graph but contribute zero loss.
+                            evi_loss = evi_logits.sum() * 0.0
+                    else:
+                        evi_loss = doc_emb.new_zeros(())
+
+                    # Total Loss = ds_weight * L_CE + β_t * L_sparsity + λ_evi * L_evidence
+                    batch_loss = ds_weight * cls_loss + beta_t * sparsity + float(args.lambda_evidence) * evi_loss
 
                     if not torch.isfinite(batch_loss):
                         if rank == 0:
@@ -3075,7 +3382,7 @@ def main():
                     num_accum += 1
 
                     # Clear memory after backward pass
-                    del batch_loss, cls_loss, sparsity, logits, pi, sgs
+                    del batch_loss, cls_loss, sparsity, evi_loss, logits, pi, sgs
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                     p_s = p_e
@@ -3140,6 +3447,11 @@ def main():
                 tail_buckets=tail_buckets,
                 train_facts_annotated=train_facts_annotated,
                 train_facts_distant=train_facts_distant,
+                mixed_precision=bool(args.mixed_precision),
+                tta_bidirectional=bool(args.tta_bidirectional),
+                tta_single_direction_penalty=float(args.tta_single_direction_penalty),
+                evidence_threshold=float(args.evidence_threshold),
+                evidence_topk=int(args.evidence_topk),
             )
             eval_f1 = float(eval_metrics.get('f1', 0.0))
             print(f"Epoch {epoch} F1: {eval_f1:.4f}")
@@ -3238,6 +3550,11 @@ def main():
                     tail_buckets=tail_buckets,
                     train_facts_annotated=train_facts_annotated,
                     train_facts_distant=train_facts_distant,
+                    mixed_precision=bool(args.mixed_precision),
+                    tta_bidirectional=bool(args.tta_bidirectional),
+                    tta_single_direction_penalty=float(args.tta_single_direction_penalty),
+                    evidence_threshold=float(args.evidence_threshold),
+                    evidence_topk=int(args.evidence_topk),
                 )
                 best_test_f1 = float(best_test_metrics.get('f1', 0.0)) if best_test_metrics else 0.0
                 _upload_inference_json_to_wandb(best_ckpt_result_path, artifact_name=f"{safe_run_name}_best_ckpt_result")
@@ -3287,6 +3604,11 @@ def main():
             tail_buckets=tail_buckets,
             train_facts_annotated=train_facts_annotated,
             train_facts_distant=train_facts_distant,
+            mixed_precision=bool(args.mixed_precision),
+            tta_bidirectional=bool(args.tta_bidirectional),
+            tta_single_direction_penalty=float(args.tta_single_direction_penalty),
+            evidence_threshold=float(args.evidence_threshold),
+            evidence_topk=int(args.evidence_topk),
         )
         best_test_f1 = float(best_test_metrics.get('f1', 0.0)) if best_test_metrics else 0.0
         _upload_inference_json_to_wandb(best_ckpt_result_path, artifact_name=f"{safe_run_name}_best_ckpt_result_final")
