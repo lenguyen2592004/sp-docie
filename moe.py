@@ -141,10 +141,12 @@ import numpy as np
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 try:
-    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+    from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 except ImportError:
     AutoTokenizer = None
+    AutoModel = None
     AutoModelForCausalLM = None
+    AutoConfig = None
     BitsAndBytesConfig = None
 
 try:
@@ -1196,6 +1198,45 @@ class SparseRouter(nn.Module):
         return logits, top_idx.squeeze(-1)
 
 
+class DifficultyAwareRouter(nn.Module):
+    """
+    Router for depth-heterogeneous experts.
+
+    Routes each entity pair using BOTH its contextual pair features AND structural
+    difficulty signals derived from the pair's subgraph (graph hop-distance between
+    h and t, subgraph size/density). The intent: steer "hard" pairs (long reasoning
+    paths, larger neighborhoods) toward deeper experts and "easy" intra-sentence pairs
+    toward shallow experts — adaptive computation matched to reasoning difficulty.
+
+    Math: logits = W·[pair_features ⊕ difficulty_feats] (+ noise during training);
+    top-1 dispatch e* = argmax(logits). Difficulty features are appended so the router
+    can condition routing on structure, not just content.
+    """
+    def __init__(self, in_dim, num_experts, num_diff_feats=4, noise_eps=1e-2):
+        super().__init__()
+        self.num_experts = num_experts
+        self.num_diff_feats = num_diff_feats
+        self.noise_eps = noise_eps
+        self.linear = nn.Linear(in_dim + num_diff_feats, num_experts)
+
+    def forward(self, x, diff_feats, training=True):
+        """
+        Args:
+            x: pair features (B, in_dim)
+            diff_feats: structural difficulty features (B, num_diff_feats), in [0,1]
+            training: add exploration noise only during training
+        Returns:
+            logits: routing scores (B, num_experts)
+            top_idx: selected expert indices (B,)
+        """
+        h = torch.cat([x, diff_feats.to(x.dtype)], dim=-1)
+        logits = self.linear(h)
+        if training:
+            logits = logits + torch.randn_like(logits) * self.noise_eps
+        _, top_idx = logits.topk(1, dim=-1)
+        return logits, top_idx.squeeze(-1)
+
+
 # ==========================================
 # 3. MOE-GRAPH MODEL (Core Architecture)
 # ==========================================
@@ -1309,26 +1350,48 @@ class MoEGraphRE(nn.Module):
              Router ≈ posterior expert selection
              Expert ≈ conditional graph encoder
     """
-    def __init__(self, llm_model, num_relations, num_experts=4, expert_dim=128, noise_scale=1e-2, capacity_factor=1.25, graph_device='cpu'):
+    def __init__(self, llm_model, num_relations, num_experts=4, expert_dim=128, noise_scale=1e-2, capacity_factor=1.25, graph_device='cpu', expert_depths=None, use_shared_expert=True, num_diff_feats=4, hop_max=4):
         super().__init__()
         self.llm = llm_model
-        self.num_experts = num_experts
         self.expert_dim = expert_dim
         self.noise_scale = noise_scale
         self.capacity_factor = capacity_factor
         self.graph_device = graph_device
-        
+        self.num_diff_feats = num_diff_feats
+        self.hop_max = hop_max
+
         hidden_size = llm_model.config.hidden_size
-        
-        # Experts: specialized graph encoders
+
+        # Heterogeneous-depth experts: each routed expert has a different number of
+        # graph-transformer layers (shallow → deep). EC/difficulty routing steers hard
+        # (long-reasoning) pairs to deep experts and easy intra-sentence pairs to shallow ones.
+        if expert_depths is None:
+            # Spread depths across num_experts, e.g. 3 → [1,2,4]; 4 → [1,2,3,4]
+            if num_experts <= 1:
+                expert_depths = [2]
+            elif num_experts == 2:
+                expert_depths = [1, 3]
+            elif num_experts == 3:
+                expert_depths = [1, 2, 4]
+            else:
+                expert_depths = [max(1, 1 + i) for i in range(num_experts)]
+        self.expert_depths = list(expert_depths)
+        self.num_experts = len(self.expert_depths)
+
         self.experts = nn.ModuleList([
-            GraphExpert(hidden_size, expert_dim, expert_dim) 
-            for _ in range(num_experts)
+            GraphExpert(hidden_size, expert_dim, expert_dim, num_layers=d)
+            for d in self.expert_depths
         ])
-        
-        # Router: learns p(expert | entity_pair_context)
-        self.router = SparseRouter(hidden_size * 2, num_experts, noise_eps=noise_scale)
-        
+
+        # Shared/residual expert: always applied to every pair (dense path). Captures
+        # common (head-relation) patterns and stabilises gradients; routed experts add
+        # specialisation residually. (DeepSeekMoE-style shared+routed.)
+        self.use_shared_expert = use_shared_expert
+        self.shared_expert = GraphExpert(hidden_size, expert_dim, expert_dim, num_layers=2) if use_shared_expert else None
+
+        # Difficulty-aware router: conditions routing on pair context + graph structure.
+        self.router = DifficultyAwareRouter(hidden_size * 2, self.num_experts, num_diff_feats=num_diff_feats, noise_eps=noise_scale)
+
         # Classifier: final relation predictor
         self.classifier = nn.Sequential(
             nn.Linear(expert_dim * 2, expert_dim),
@@ -1336,6 +1399,59 @@ class MoEGraphRE(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(expert_dim, num_relations)
         )
+
+    def _difficulty_features(self, graph_list):
+        """
+        Per-pair structural difficulty signal, derived from each pair's subgraph.
+
+        Returns (B, num_diff_feats) in [0,1]:
+          [hop_norm, nodes_norm, edges_norm, direct_flag]
+        where hop = shortest-path hops between the two is_ht nodes (h,t) on the
+        (undirected) subgraph. Disconnected/missing → hardest (1.0). Computed on tiny
+        (<=15-node) graphs, so BFS cost is negligible. No call-site changes needed.
+        """
+        feats = []
+        for g in graph_list:
+            try:
+                n_nodes = int(g.num_nodes())
+                n_edges = int(g.num_edges())
+                ht = g.ndata['is_ht'].bool().nonzero(as_tuple=True)[0].tolist() if 'is_ht' in g.ndata else []
+                hop = self.hop_max  # default: hardest
+                if len(ht) >= 2:
+                    src, dst = g.edges()
+                    adj = defaultdict(set)
+                    for u, v in zip(src.tolist(), dst.tolist()):
+                        adj[u].add(v)
+                        adj[v].add(u)
+                    start, goal = ht[0], ht[1]
+                    # BFS shortest path (capped at hop_max)
+                    seen = {start}
+                    frontier = [start]
+                    d = 0
+                    found = (start == goal)
+                    while frontier and not found and d < self.hop_max:
+                        d += 1
+                        nxt = []
+                        for u in frontier:
+                            for w in adj[u]:
+                                if w == goal:
+                                    found = True
+                                    break
+                                if w not in seen:
+                                    seen.add(w)
+                                    nxt.append(w)
+                            if found:
+                                break
+                        frontier = nxt
+                    hop = d if found else self.hop_max
+                hop_norm = min(1.0, hop / float(self.hop_max))
+                nodes_norm = min(1.0, n_nodes / 15.0)
+                edges_norm = min(1.0, n_edges / float(15 * 14))
+                direct = 1.0 if hop == 1 else 0.0
+            except Exception:
+                hop_norm, nodes_norm, edges_norm, direct = 1.0, 0.0, 0.0, 0.0
+            feats.append([hop_norm, nodes_norm, edges_norm, direct])
+        return torch.tensor(feats, dtype=torch.float32)
         
     def forward(self, subgraphs, pair_features):
         """
@@ -1356,71 +1472,77 @@ class MoEGraphRE(nn.Module):
         device = pair_features.device
         pair_features = pair_features.to(dtype)
         batch_size = pair_features.shape[0]
-        
+        out_dim = self.expert_dim * 2
+
         # Ensure correct dtype
         self.experts.to(dtype)
         self.router.to(dtype)
         self.classifier.to(dtype)
-        
-        # Step 1: Router - Select top-1 expert per sample
-        router_logits, top1_idx = self.router(pair_features, training=self.training)
+        if self.shared_expert is not None:
+            self.shared_expert.to(dtype)
 
-        # Step 2: Compute gating weights (for gradient flow)
+        # Unbatch subgraphs first (needed for structural difficulty features).
+        # DGL may be CPU-only even when the rest of the model runs on CUDA.
+        graph_list = dgl.unbatch(subgraphs)
+        graph_list = [g.to(self.graph_device) for g in graph_list]
+
+        # Step 1: Difficulty-aware routing — condition on pair context + graph structure.
+        diff_feats = self._difficulty_features(graph_list).to(device)
+        router_logits, top1_idx = self.router(pair_features, diff_feats, training=self.training)
+
+        # Step 2: Gating weights (for gradient flow)
         probs = F.softmax(router_logits, dim=-1)
         top1_prob = probs.gather(1, top1_idx.unsqueeze(-1)).squeeze(-1)
 
-        # Step 3: Dispatch & Execute experts (capacity-limited)
-        graph_list = dgl.unbatch(subgraphs)
-        # DGL may be CPU-only even when the rest of the model runs on CUDA.
-        graph_list = [g.to(self.graph_device) for g in graph_list]
-        # Gradient-safe default path: even if a sample is dropped by capacity or hits
-        # expert fallback, the loss still has a valid autograd path to pair_features.
-        out_dim = self.expert_dim * 2
-        if pair_features.shape[-1] >= out_dim:
-            pair_emb = pair_features[:, :out_dim].clone()
+        # Step 3a: Shared/residual expert — always applied to every pair (dense path).
+        # Provides the residual anchor; routed experts add specialisation on top.
+        if self.use_shared_expert and self.shared_expert is not None:
+            all_graphs = dgl.batch(graph_list).to(self.graph_device)
+            pair_emb = self.shared_expert(
+                all_graphs,
+                all_graphs.ndata['h'].to(device=self.graph_device, dtype=dtype),
+                pair_features.to(device=self.graph_device, dtype=dtype),
+            ).to(device)
         else:
-            pad = torch.zeros(
-                (batch_size, out_dim - pair_features.shape[-1]),
-                device=device,
-                dtype=dtype,
-            )
-            pair_emb = torch.cat([pair_features, pad], dim=-1)
-        
-        # Capacity: max tokens per expert (prevents overload)
+            # Gradient-safe fallback: valid autograd path to pair_features even with no shared expert.
+            if pair_features.shape[-1] >= out_dim:
+                pair_emb = pair_features[:, :out_dim].clone()
+            else:
+                pad = torch.zeros((batch_size, out_dim - pair_features.shape[-1]), device=device, dtype=dtype)
+                pair_emb = torch.cat([pair_features, pad], dim=-1)
+
+        # Step 3b: Routed heterogeneous-depth experts (capacity-limited), added residually.
+        routed_out = torch.zeros((batch_size, out_dim), device=device, dtype=dtype)
         capacity = max(1, int(math.ceil(self.capacity_factor * batch_size / self.num_experts)))
-        
+
         for e_idx in range(self.num_experts):
-            # Find samples routed to expert e_idx
             mask = (top1_idx == e_idx)
             selected_indices = mask.nonzero(as_tuple=True)[0]
-            
             if selected_indices.numel() == 0:
-                continue  # Skip unused expert
+                continue
 
-            # Apply capacity limit (drop lowest priority if overflow)
+            # Capacity: drop lowest-confidence overflow
             if selected_indices.numel() > capacity:
                 sel_probs = top1_prob[selected_indices]
                 _, top_k = torch.topk(sel_probs, k=capacity)
                 selected_indices = selected_indices[top_k]
-                
-            # Prepare sub-batch for this expert
+
             e_pair_feats = pair_features[selected_indices]
-            e_graphs = dgl.batch([graph_list[i] for i in selected_indices.tolist()])
-            
-            # Ensure graph is on selected graph device (DGL batch may not preserve device)
-            e_graphs = e_graphs.to(self.graph_device)
-            
+            e_graphs = dgl.batch([graph_list[i] for i in selected_indices.tolist()]).to(self.graph_device)
+
             # Execute ONLY this expert (conditional computation)
-            # Experts consume graph features on graph device; output is moved back to pair device.
             e_out = self.experts[e_idx](
                 e_graphs,
                 e_graphs.ndata['h'].to(device=self.graph_device, dtype=dtype),
                 e_pair_feats.to(device=self.graph_device, dtype=dtype),
             ).to(device)
-            
-            # Combine back (weighted by router confidence)
-            pair_emb[selected_indices] = e_out * top1_prob[selected_indices].unsqueeze(-1)
-            
+
+            # Residual contribution, weighted by router confidence
+            routed_out[selected_indices] = e_out * top1_prob[selected_indices].unsqueeze(-1)
+
+        # Residual fusion: shared (dense) + routed (specialised)
+        pair_emb = pair_emb + routed_out
+
         # Step 4: Final classification
         logits = self.classifier(pair_emb)
         return logits, router_logits, top1_idx, pair_emb
@@ -1888,13 +2010,15 @@ def main():
     parser.add_argument('--full-eval', action='store_true', help='Use full evaluation set (DISABLED by default).')
     parser.add_argument('--full-test', action='store_true', help='Use full test set for final evaluation.')
 
-    parser.add_argument('--model-id', type=str, default="Qwen/Qwen3-8B", help='HF model id for the LLM backbone.')
+    parser.add_argument('--model-id', type=str, default="roberta-large", help='HF model id for the LLM backbone. Encoder backbones (roberta-large/bert) load via AutoModel without quantization; causal LMs (e.g. Qwen/Qwen3-8B) load 4-bit on CUDA.')
     parser.add_argument('--cpu-debug-model', type=str, default="sshleifer/tiny-gpt2", help='Fallback model id when running on CPU in debug/overfit.')
     parser.add_argument('--allow-cpu-large-model', action='store_true', help='Allow loading large models on CPU (may be extremely slow / OOM).')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'], help='Device selection. auto uses CUDA only if both torch and DGL support it; otherwise falls back to CPU.')
     
     # MoE hyperparameters
-    parser.add_argument('--num-experts', type=int, default=3, help='Number of graph experts')
+    parser.add_argument('--num-experts', type=int, default=3, help='Number of routed graph experts (ignored if --expert-depths is set).')
+    parser.add_argument('--expert-depths', type=str, default="1,2,4", help='Comma-separated graph-layer depths for the heterogeneous routed experts, shallow→deep (e.g. "1,2,4"). Overrides --num-experts. Empty string falls back to homogeneous experts from --num-experts.')
+    parser.add_argument('--no-shared-expert', action='store_true', help='Disable the always-on shared/residual expert (default: enabled).')
     parser.add_argument('--capacity-factor', type=float, default=1.25, help='Expert capacity multiplier')
     parser.add_argument('--lambda-moe', type=float, default=0.1, help='Switch load balance loss weight')
     
@@ -1921,7 +2045,7 @@ def main():
     
     # Memory optimization
     parser.add_argument('--max-pairs-per-doc', type=int, default=25, help='Maximum number of (h, t) pairs per document to process.')
-    parser.add_argument('--max-seq-length', type=int, default=1024, help='Maximum tokenized sequence length per document/pair view.')
+    parser.add_argument('--max-seq-length', type=int, default=512, help='Maximum tokenized sequence length per document/pair view. RoBERTa/BERT cap at 512 (max_position_embeddings=514); raise only for long-context causal LMs.')
     parser.add_argument('--grad-clip-norm', type=float, default=1.0, help='Max grad norm for clipping to prevent exploding gradients.')
 
     parser.add_argument('--no-pair-markers', action='store_true', help='Disable per-pair inline markers ([E1]/[E2])')
@@ -2170,11 +2294,12 @@ def main():
         print(f"[DS] Wrote cleaned DS file: {args.distant_clean_file}")
         return
 
-    # Remaining stages require model/LLM
-    if AutoTokenizer is None or AutoModelForCausalLM is None or BitsAndBytesConfig is None:
+    # Remaining stages require model/LLM. Encoder backbones (RoBERTa/BERT) only need
+    # transformers; bitsandbytes is optional and used solely for 4-bit causal-LM loading.
+    if AutoTokenizer is None or AutoModel is None or AutoModelForCausalLM is None or AutoConfig is None:
         raise ImportError(
-            "transformers (and bitsandbytes integration) are required for overfit/train stages. "
-            "Install with: pip install transformers bitsandbytes accelerate"
+            "transformers is required for overfit/train stages. "
+            "Install with: pip install transformers accelerate (and bitsandbytes for 4-bit causal LMs)"
         )
     peft_available = not (get_peft_model is None or LoraConfig is None or TaskType is None)
     if (not peft_available) and rank == 0:
@@ -2566,7 +2691,9 @@ def main():
             artifact_name="Tokenizer",
         )
     tokenizer.add_special_tokens({"additional_special_tokens": ["[E1]", "[/E1]", "[E2]", "[/E2]"]})
-    tokenizer.pad_token = tokenizer.eos_token
+    # Encoder backbones (RoBERTa/BERT) already define <pad>; only causal LMs (Qwen) lack one.
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     use_pair_markers = not args.no_pair_markers
     e1_id = tokenizer.convert_tokens_to_ids("[E1]")
@@ -2575,10 +2702,44 @@ def main():
         print("[WARN] Pair markers requested but special tokens not found; disabling markers.")
         use_pair_markers = False
 
-    # LLM: Frozen backbone + LoRA fine-tuning (4-bit quantization on CUDA for efficiency)
+    # Detect encoder backbones (RoBERTa/BERT/DeBERTa/ELECTRA): they are bidirectional
+    # encoders, fit easily in memory (no 4-bit needed), and must use AutoModel — not
+    # AutoModelForCausalLM, which would wrongly attach a causal mask / LM head.
+    def _is_encoder_backbone(model_id):
+        try:
+            cfg = AutoConfig.from_pretrained(model_id, cache_dir=os.environ.get("HF_HOME"))
+        except Exception:
+            mt = str(model_id).lower()
+            return any(k in mt for k in ("roberta", "bert", "deberta", "electra"))
+        if getattr(cfg, "is_decoder", False) or getattr(cfg, "is_encoder_decoder", False):
+            return False
+        return str(getattr(cfg, "model_type", "")).lower() in (
+            "roberta", "bert", "deberta", "deberta-v2", "electra", "xlm-roberta",
+        )
+
+    is_encoder = _is_encoder_backbone(MODEL_ID)
+
+    # LLM: Frozen backbone + LoRA fine-tuning (4-bit quantization on CUDA only for large causal LMs)
     def _load_base_model(model_id):
-        print("Loading LLM..." + (" (4-bit quantization)" if use_cuda else " (CPU fp32)"))
+        if is_encoder:
+            # RoBERTa-large (~355M) fits easily in fp32 on a single GPU; fp32 avoids the
+            # training instability of pure-fp16 without an autocast scaler.
+            print("Loading encoder LLM (RoBERTa/BERT-style, fp32, no quantization)...")
+            m = _load_with_cache_retry(
+                AutoModel,
+                model_id,
+                {
+                    "cache_dir": os.environ.get("HF_HOME"),
+                    "torch_dtype": torch.float32,
+                },
+                artifact_name="Model",
+            )
+            return m.to(DEVICE)
+
+        print("Loading causal LLM..." + (" (4-bit quantization)" if use_cuda else " (CPU fp32)"))
         if use_cuda:
+            if BitsAndBytesConfig is None:
+                raise ImportError("bitsandbytes is required for 4-bit causal-LM loading; install it or use an encoder backbone like roberta-large.")
             # Clear any residual GPU memory before loading model
             torch.cuda.empty_cache()
             return _load_with_cache_retry(
@@ -2626,7 +2787,8 @@ def main():
                 artifact_name="Tokenizer",
             )
             tokenizer.add_special_tokens({"additional_special_tokens": ["[E1]", "[/E1]", "[E2]", "[/E2]"]})
-            tokenizer.pad_token = tokenizer.eos_token
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
             e1_id = tokenizer.convert_tokens_to_ids("[E1]")
             e2_id = tokenizer.convert_tokens_to_ids("[E2]")
             if use_pair_markers and (e1_id is None or e2_id is None or e1_id == tokenizer.unk_token_id or e2_id == tokenizer.unk_token_id):
@@ -2643,9 +2805,11 @@ def main():
     # Choose target modules based on backbone architecture.
     module_names = [name for name, _ in base_model.named_modules()]
     if any(n.endswith('q_proj') for n in module_names) and any(n.endswith('v_proj') for n in module_names):
-        target_modules = ["q_proj", "v_proj"]
+        target_modules = ["q_proj", "v_proj"]  # Qwen / LLaMA-style causal LMs
+    elif any(n.endswith('attention.self.query') for n in module_names) and any(n.endswith('attention.self.value') for n in module_names):
+        target_modules = ["query", "value"]  # RoBERTa / BERT-style encoders
     elif any(n.endswith('c_attn') for n in module_names):
-        target_modules = ["c_attn"]
+        target_modules = ["c_attn"]  # GPT-2-style
     else:
         target_modules = []
 
@@ -2669,17 +2833,33 @@ def main():
         lora_model = base_model
     
     # MoE Graph RE Model with Sparse Experts
+    # Parse heterogeneous expert depths (shallow→deep). Empty → homogeneous from --num-experts.
+    _depths_str = (args.expert_depths or "").strip()
+    if _depths_str:
+        try:
+            expert_depths = [max(1, int(x)) for x in _depths_str.split(",") if x.strip() != ""]
+        except ValueError:
+            if rank == 0:
+                print(f"[WARN] Could not parse --expert-depths='{args.expert_depths}'; falling back to --num-experts={args.num_experts}.")
+            expert_depths = None
+    else:
+        expert_depths = None
+
     model = MoEGraphRE(
         lora_model,
         num_relations,
         num_experts=args.num_experts,
         capacity_factor=args.capacity_factor,
         graph_device=graph_device,
+        expert_depths=expert_depths,
+        use_shared_expert=(not args.no_shared_expert),
     ).to(DEVICE)
 
     if graph_device == 'cpu':
         model.experts = model.experts.to('cpu')
-    
+        if model.shared_expert is not None:
+            model.shared_expert = model.shared_expert.to('cpu')
+
     # Learnable relation prototypes for structural contrastive alignment.
     prototype_dim = model.expert_dim * 2
     prototypes = RelationPrototype(num_relations, prototype_dim).to(DEVICE)

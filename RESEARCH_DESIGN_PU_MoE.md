@@ -142,6 +142,98 @@ R_r(f) = π_r · E_P[ℓ⁺(f)] + max(0,  E_U[ℓ⁻(f)] − π_r · E_P[ℓ⁻(
 - COMM — AAAI 2025: https://arxiv.org/pdf/2503.13885
 - FM-RKD — IPM Q1: https://www.sciencedirect.com/science/article/abs/pii/S0306457323002704
 
+## 8. HƯỚNG ĐÃ CHỐT — Adaptive-Depth Experts + PU + Residual (trục bài A*)
+
+> Quyết định: trục chính = **heterogeneous-depth experts (adaptive computation theo độ khó suy luận)**;
+> pillar 2 = **PU learning** (xử lý false-negative); stabilizer = **shared/residual expert**.
+> Residual/shared-expert là *thành phần ổn định*, KHÔNG phải đóng góp tiêu đề.
+
+### 8.1 Ba trụ & vì sao
+1. **Adaptive-depth experts (trục):** expert KHÔNG đồng nhất — vài expert nông (intra-sentence, 1-hop),
+   vài expert sâu (cross-sentence, multi-hop AGGCN). EC routing gửi cặp "khó" tới expert sâu.
+   - *Gap:* khoảng cách F1 intra- vs inter-sentence (điểm yếu kinh điển DocRE).
+   - *Vì sao cũ hỏng:* 3 GraphExpert giống hệt (moe.py:1324-1327) phí compute cho cặp dễ, thiếu chiều sâu cho cặp khó.
+   - *Vì sao sửa được:* EC cho mỗi cặp số expert biến thiên; ghép expert dị thể → adaptive computation theo độ khó.
+2. **PU learning (pillar 2):** thay closed-world negatives bằng nnPU + SSR-PU squared-ranking (xem §1-3).
+   Lấp FN — gap #1.
+3. **Shared/residual expert (stabilizer):** một expert "shared" luôn bật (dense path) giữ pattern quan hệ
+   head/phổ biến; routed experts lo phần đặc thù/tail → hỗ trợ long-tail + ổn định gradient.
+   Tham chiếu: DeepSeekMoE shared+routed; residual MoE.
+
+### 8.2 Thiết kế cụ thể
+- **Tập expert:** 1 shared (luôn áp, residual) + N routed experts với **độ sâu khác nhau**
+  (vd N=3: nông=1 lớp, vừa=2 lớp, sâu=4 lớp AGGCN). Output = shared_out + Σ routed_out (residual add).
+- **Tín hiệu router độ khó:** thêm đặc trưng phụ trợ vào đầu vào router để học "độ khó":
+  số hop giữa h,t trên entity-graph, số câu evidence, khoảng cách token nhỏ nhất
+  (tái dùng `_pair_fast_score`, moe.py:635). → router dễ học gửi cặp khó tới expert sâu.
+- **EC routing:** route theo pool document (mở pool, §2.5); bỏ switch-LB-loss; entropy reg nhỏ phòng collapse.
+- **PU loss:** nnPU global-clamp (§2.1) + squared-ranking per-relation; MIL top-k + weight cho FP (§3A).
+
+### 8.3 Ablation (để đủ tầm A*)
+- Expert đồng nhất vs adaptive-depth (cô lập đóng góp trục).
+- Có/không tín hiệu độ khó vào router.
+- Có/không shared/residual expert.
+- PU on/off; MIL on/off; symmetric loss on/off.
+- Phân tích: F1 theo độ khó (intra vs 1-hop vs ≥2-hop) — chứng minh expert sâu thắng ở cặp khó.
+- Phân tích routing: cặp khó có thực sự được gửi tới expert sâu không (heatmap depth × hop-distance).
+
+### 8.4 Lịch huấn luyện đề xuất
+1. Warm-up: train với loss chuẩn (focal) để expert/ router ổn định.
+2. Bật PU loss (nnPU + squared-ranking) + MIL/weight cho FP.
+3. Bật adaptive-depth routing đầy đủ + entropy reg.
+4. Eval trên Re-DocRED sạch (Ign F1); so bar TTM-RE 84.01.
+
+### 8.5 Rủi ro & kiểm soát
+- Router không học được "độ khó" → đã tiêm tín hiệu phụ trợ (8.2).
+- Expert sâu nuốt hết cặp (mất cân bằng) → EC capacity + must-keep + entropy reg.
+- Residual path lấn át routed (router lười) → theo dõi tỉ trọng đóng góp shared vs routed.
+
+---
+
+## 9. THIẾT KẾ KỸ THUẬT (1) — Adaptive-Depth Experts + Difficulty-Aware Router
+
+### 9.1 Nguyên tắc thiết kế khớp data
+- DocRED: graph entity nhỏ (≤15 node), cặp **intra-sentence dễ** vs **cross-sentence/multi-hop khó**.
+- → Tín hiệu độ khó **rút trực tiếp từ subgraph** (không cần đổi call-site): hop-distance giữa h,t,
+  số node, số cạnh, cờ nối-trực-tiếp. Cặp khó (hop xa) → expert sâu.
+
+### 9.2 Các thành phần
+1. **GraphExpert dị-độ-sâu:** tái dùng `GraphExpert(num_layers=d)`; tạo N expert với depth khác nhau,
+   ví dụ `expert_depths=[1,2,4]` (nông→sâu).
+2. **Shared/residual expert:** một `GraphExpert` (depth vừa, vd 2) **luôn áp cho mọi cặp**;
+   output cuối = `shared_out + routed_out` (residual). Giữ pattern quan hệ head + ổn định gradient.
+3. **DifficultyAwareRouter:** input = `[pair_features (hidden*2)] ⊕ [difficulty_feats]`;
+   top-1 (giai đoạn đầu) → sau nâng lên Expert-Choice khi mở pool theo doc.
+
+### 9.3 Difficulty features (tính trong forward, từ mỗi subgraph)
+- `hop_norm` = shortest-path-hops(h,t) / HOP_MAX (disconnected → 1.0)
+- `nodes_norm` = num_nodes / 15
+- `edges_norm` = num_edges / (15*14)
+- `direct` = 1.0 nếu hop==1
+→ vector 4 chiều, chuẩn hóa [0,1]. (Đánh đúng "độ khó suy luận" mà không cần evidence — vốn chỉ có lúc train.)
+
+### 9.4 Forward (residual + heterogeneous routing)
+```
+diff = difficulty_feats(subgraphs)            # (B,4)
+logits, top1 = router(pair_features, diff)
+shared_out = shared_expert(all_graphs)        # (B, expert_dim*2), luôn áp
+routed_out = 0; per expert e: routed_out[idx_e] = expert_e(graphs_e) * gate_e
+pair_emb = shared_out + routed_out            # residual
+logits_rel = classifier(pair_emb)
+```
+
+### 9.5 Tham số mới
+- `--expert-depths "1,2,4"` (nếu set → num_experts = len); else sinh từ `--num-experts`.
+- `--use-shared-expert` (mặc định bật).
+
+### 9.6 Vì sao hợp data & đủ A*
+- Adaptive computation theo độ khó suy luận = chủ đề được trọng vọng; tín hiệu độ khó lấy từ chính
+  cấu trúc graph DocRED → rẻ, không thêm call-site.
+- Shared+residual hỗ trợ long-tail (head ở shared, tail ở routed) + ổn định.
+- Ablation: đồng nhất vs dị-độ-sâu; có/không diff-feats; có/không shared; heatmap depth×hop.
+
+---
+
 ## 7. Caveat
 - Số F1 là tác giả tự báo, chưa tái lập độc lập.
 - "SOTA" là tương đối thời điểm; mốc 2026 có thể có hệ mạnh hơn.
