@@ -234,6 +234,66 @@ logits_rel = classifier(pair_emb)
 
 ---
 
+## 10. AGGCN EXPERT — kiến trúc chi tiết (thay GraphExpert)
+
+> Mục tiêu: mỗi expert là một **AGGCN** (Attention Guided GCN, ACL 2019) thay cho `GraphExpert`
+> (graph-masked transformer hiện tại). Giữ nguyên mọi tầng khác (backbone, router, shared/residual,
+> EC, PU) — AGGCN chỉ thay **nội bộ expert**. Đã xác nhận **không có conflict chặn** (xem §10.5).
+
+### 10.1 Vì sao AGGCN hợp data này
+- Graph entity nhỏ (≤15 node) → attention fully-connected rất rẻ (matmul 15×15).
+- Adjacency hiện tại là **co-occurrence nhị phân thô**; AGGCN học **soft-adjacency** → nắm quan hệ
+  entity–entity tinh hơn (soft pruning > hard pruning — luận điểm cốt lõi của AGGCN).
+
+### 10.2 Cấu trúc một AGGCN block
+Mỗi block gồm 3 lớp:
+1. **Attention-Guided Layer (AGL):** multi-head self-attention sinh **M ma trận kề mềm**
+   `Ã^(m) = softmax(Q_m K_mᵀ / √d)`, m=1..M. (M nhỏ, đề xuất M=2.)
+   - Head 0 có thể **gắn adjacency gốc A** (từ `g.edges()`) làm prior cấu trúc + soft-pruning.
+2. **Densely-Connected GCN (DCL):** mỗi `Ã^(m)` → một khối GCN nối-dày L sub-layer:
+   `g_i^(l) = σ( Σ_j Ã_ij^(m) W^(l) g_j^(concat<l) + b^(l) )`, dense connection (input sub-layer l = concat output các sub-layer trước). (L nhỏ, đề xuất L=2.)
+3. **Linear Combination:** concat M đầu ra GCN → linear về `out_dim`, kèm residual + LayerNorm.
+
+### 10.3 Map vào adaptive-depth
+- **"Depth" của expert = số AGGCN block** (`num_blocks`). `--expert-depths "1,2,4"` → expert có 1/2/4 block.
+- Câu chuyện adaptive: *cặp khó → expert nhiều block → nhiều vòng tinh chỉnh soft-adjacency*.
+- **Width** (M head, L sub-layer) giữ NHỎ và cố định để chống phình tham số (data ~3k doc).
+
+### 10.4 Interface (giữ nguyên để khớp pipeline)
+```
+class AGGCNExpert(nn.Module):
+    __init__(in_dim, out_dim, num_blocks, num_heads=2, dense_sublayers=2, dropout=0.1)
+    forward(g, h, pair_repr) -> (B, out_dim*2)   # [h_repr, t_repr] gather qua is_ht
+```
+- Xử lý **per-subgraph** (unbatch như GraphExpert) vì soft-adjacency là per-graph.
+- Tái dựng A gốc từ `g.edges()` (không cần truyền `adj` riêng).
+- Fallback khi graph rỗng/1 node: như `GraphExpert._fallback`.
+
+### 10.5 Conflict check (đã rà) — KHÔNG có conflict chặn
+| Thành phần | Conflict | Ghi chú |
+|---|---|---|
+| RoBERTa backbone | ❌ | chỉ đổi `in_proj` theo hidden_size |
+| Adaptive-depth | ❌ | depth = số AGGCN block |
+| Difficulty router | ❌ | router độc lập nội bộ expert |
+| Shared/residual | ❌ | shared cũng là AGGCN; output `out_dim*2` |
+| EC routing | ❌ | EC chọn expert; AGGCN xử lý graph |
+| PU loss | ❌ + synergy | nnPU sinh ra cho model sâu/linh hoạt như AGGCN |
+
+**Phải QUẢN LÝ (không phải conflict):**
+1. Mixture chồng mixture (M head nội bộ + EC + depth) → giữ M=2, L=2.
+2. Compute: shared AGGCN chạy mọi cặp → ok vì graph ≤15 node.
+3. ⭐ Difficulty feature PHẢI là **tín hiệu mềm** (hop-distance làm feature router), **KHÔNG hard-prune**
+   graph về shortest path trước AGGCN (sẽ xung đột soft-pruning). Code hiện đúng: BFS chỉ lấy feature,
+   AGGCN vẫn nhận full graph.
+4. Output interface `out_dim*2` qua `is_ht` để khớp classifier + residual.
+
+### 10.6 Ablation riêng cho AGGCN
+- `GraphExpert` (mask cứng) vs `AGGCNExpert` (soft-adjacency).
+- M head: 1 vs 2 vs 4; L sub-layer: 1 vs 2.
+- Có/không gắn adjacency gốc A vào head 0.
+
+---
+
 ## 7. Caveat
 - Số F1 là tác giả tự báo, chưa tái lập độc lập.
 - "SOTA" là tương đối thời điểm; mốc 2026 có thể có hệ mạnh hơn.
