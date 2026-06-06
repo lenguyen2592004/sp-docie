@@ -1,0 +1,100 @@
+Seed set to 42
+[HF] Using cache root: /tmp/hf_home
+[ARGS] stage=overfit epochs=0 debug=True full_train=False full_eval=False
+[INFO] CPU + debug/overfit detected, using smaller model: sshleifer/tiny-gpt2
+Using device: cpu
+wandb: WARNING Unable to verify login in offline mode.
+wandb: Tracking run with wandb version 0.25.1
+wandb: W&B syncing is set to `offline` in this directory. Run `wandb online` or set WANDB_MODE=online to enable cloud syncing.
+wandb: Run data is saved locally in /tmp/wandb/wandb/offline-run-20260323_054717-obh4parf
+[CKPT] Removed old checkpoint dir: /workspace/checkpoints/moe_overfit_20260323_053720_ef6273ae
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_overfit_20260323_054717_e9d3974d_result_verify.json
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_overfit_20260323_054717_e9d3974d/best_model.pt
+[W&B] Uploaded workspace artifact: moe_overfit_20260323_054717_e9d3974d_workspace (155 files, contains_moe_py=True)
+Loading LLM... (CPU fp32)
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 14186.47it/s]
+The tied weights mapping and config for this model specifies to tie transformer.wte.weight to lm_head.weight, but both are present in the checkpoints, so we will NOT tie them. You should update the config with `tie_word_embeddings=False` to silence this warning
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+The new lm_head weights will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+Model device: cpu
+Prototypes device: cpu
+[DS] Mixed 1 cleaned DS docs into supervised training set
+[SPLIT] train_file split ratio=0.80 seed=42 -> train=2442 val=611
+[DATA] Train docs: 2/2442 (full=False)
+[DATA] Eval  docs: 1/611 (new val split, full=False)
+[DATA] Test docs: 1/998 (full=False)
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[LONG-TAIL] Seen relations in train: 12/96 | buckets head=3 medium=0 tail=93
+[INFO] Overfit stage often needs many epochs; consider --epochs 200 (or higher)
+[SCHEDULE] LoRA epochs=2 | GNN epochs=0 | Total=2
+[PHASE] LoRA phase active | trainable_lora_tensors=4 | lr=0.0001
+E 0 (lora) | D 0 | L: 69.5217
+
+Evaluating ... 2 docs
+Epoch 0 F1: 0.0105
+[EVAL] macro_f1=0.0087 tail_f1(head/med/tail)=0.1923/0.0000/0.0027 coverage=85/96
+
+Evaluating ... 1 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P17", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_overfit_20260323_054717_e9d3974d_result_verify.json (1345 items)
+[BEST] Updated best checkpoint at epoch 0 | val F1=0.0105 | test F1=0.0059
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 2989, in <module>
+    main()
+  File "/workspace/moe.py", line 2726, in main
+    logits, router_logits, top_idx, pair_repr = model(dgl.batch(sgs), torch.stack(p_f).to(DEVICE))
+  File "/venv/moe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/workspace/moe.py", line 1341, in forward
+    graph_list = [g.to(self.graph_device) for g in graph_list]
+  File "/workspace/moe.py", line 1341, in <listcomp>
+    graph_list = [g.to(self.graph_device) for g in graph_list]
+  File "/venv/moe/lib/python3.10/site-packages/dgl/heterograph.py", line 5720, in to
+    new_nframes.append(nframe.to(device, **kwargs))
+  File "/venv/moe/lib/python3.10/site-packages/dgl/frame.py", line 959, in to
+    newframe = self.clone()
+  File "/venv/moe/lib/python3.10/site-packages/dgl/frame.py", line 896, in clone
+    newframe = Frame(self._columns, self._num_rows)
+  File "/venv/moe/lib/python3.10/site-packages/dgl/frame.py", line 602, in __init__
+    for name, col in self._columns.items():
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 2989, in <module>
+    main()
+  File "/workspace/moe.py", line 2726, in main
+    logits, router_logits, top_idx, pair_repr = model(dgl.batch(sgs), torch.stack(p_f).to(DEVICE))
+  File "/venv/moe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/workspace/moe.py", line 1341, in forward
+    graph_list = [g.to(self.graph_device) for g in graph_list]
+  File "/workspace/moe.py", line 1341, in <listcomp>
+    graph_list = [g.to(self.graph_device) for g in graph_list]
+  File "/venv/moe/lib/python3.10/site-packages/dgl/heterograph.py", line 5720, in to
+    new_nframes.append(nframe.to(device, **kwargs))
+  File "/venv/moe/lib/python3.10/site-packages/dgl/frame.py", line 959, in to
+    newframe = self.clone()
+  File "/venv/moe/lib/python3.10/site-packages/dgl/frame.py", line 896, in clone
+    newframe = Frame(self._columns, self._num_rows)
+  File "/venv/moe/lib/python3.10/site-packages/dgl/frame.py", line 602, in __init__
+    for name, col in self._columns.items():
+KeyboardInterrupt
+[1;34mwandb[0m: 
+[1;34mwandb[0m: You can sync this run to the cloud by running:
+[1;34mwandb[0m: [1mwandb sync /tmp/wandb/wandb/offline-run-20260323_054717-obh4parf[0m
+[1;34mwandb[0m: Find logs at: [1;35m../tmp/wandb/wandb/offline-run-20260323_054717-obh4parf/logs[0m

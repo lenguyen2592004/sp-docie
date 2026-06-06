@@ -1,0 +1,8 @@
+Seed set to 42
+[HF] Using cache root: /tmp/hf_home
+[ARGS] stage=train epochs=1 debug=False full_train=False full_eval=False
+[WARN] Auto-selected CUDA but DGL CUDA backend is unavailable. Using hybrid mode (DGL on CPU).
+Using device: cuda:0
+GPU: NVIDIA GeForce RTX 5090
+GPU Memory: 33.68 GB
+Loading LLM... (4-bit quantization)

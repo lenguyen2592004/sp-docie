@@ -1,0 +1,147 @@
+Seed set to 42
+[HF] Using cache root: /tmp/hf_home
+[ARGS] stage=train epochs=2 debug=True full_train=False full_eval=False
+[INFO] CPU + debug/overfit detected, using smaller model: sshleifer/tiny-gpt2
+Using device: cpu
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: Appending key for api.wandb.ai to your netrc file: /root/.netrc
+wandb: Currently logged in as: 22520982 (21522798-uit) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run cear5ity
+wandb: Tracking run with wandb version 0.25.1
+wandb: Run data is saved locally in /workspace/wandb/run-20260318_102952-cear5ity
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run moe_train_20260318_102951_e7032d60
+wandb: ⭐️ View project at https://wandb.ai/21522798-uit/docie-ner-re-pipeline
+wandb: 🚀 View run at https://wandb.ai/21522798-uit/docie-ner-re-pipeline/runs/cear5ity
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_train_20260318_102951_e7032d60_result.json
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_train_20260318_102951_e7032d60/best_model.pt
+[W&B] Uploaded workspace artifact: moe_train_20260318_102951_e7032d60_workspace (100 files)
+Loading LLM... (CPU fp32)
+`torch_dtype` is deprecated! Use `dtype` instead!
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 29907.75it/s]
+The tied weights mapping and config for this model specifies to tie transformer.wte.weight to lm_head.weight, but both are present in the checkpoints, so we will NOT tie them. You should update the config with `tie_word_embeddings=False` to silence this warning
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+The new lm_head weights will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+/venv/moe/lib/python3.10/site-packages/peft/tuners/lora/layer.py:2285: UserWarning: fan_in_fan_out is set to False but the target module is `Conv1D`. Setting fan_in_fan_out to True.
+  warnings.warn(
+Model device: cpu
+Prototypes device: cpu
+[DS] Mixed 6 cleaned DS docs into supervised training set
+[SPLIT] train_file split ratio=0.80 seed=42 -> train=2442 val=611
+[DATA] Train docs: 26/2442 (full=False)
+[DATA] Eval  docs: 10/611 (new val split, full=False)
+[DATA] Test docs: 10/998 (full=False)
+[LONG-TAIL] Seen relations in train: 55/96 | buckets head=16 medium=13 tail=67
+[SCHEDULE] LoRA epochs=1 | GNN epochs=1 | Total=2
+[PHASE] LoRA phase active | trainable_lora_tensors=4 | lr=5e-05
+E 0 (lora) | D 0 | L: 3.7783
+E 0 (lora) | D 10 | L: 6.8426
+E 0 (lora) | D 20 | L: 6.3336
+
+Evaluating ... 10 docs
+Epoch 0 F1: 0.0090
+[EVAL] macro_f1=0.0087 tail_f1(head/med/tail)=0.0381/0.0049/0.0025 coverage=96/96
+
+Evaluating ... 10 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P6", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260318_102951_e7032d60_result.json (24000 items)
+[BEST] Updated best checkpoint at epoch 0 | val F1=0.0090 | test F1=0.0125
+[PHASE] GNN phase active | lr=5e-05
+E 1 (gnn) | D 0 | L: 9.9382
+E 1 (gnn) | D 10 | L: 6.6354
+E 1 (gnn) | D 20 | L: 6.3850
+
+Evaluating ... 10 docs
+Epoch 1 F1: 0.0090
+[EVAL] macro_f1=0.0087 tail_f1(head/med/tail)=0.0381/0.0049/0.0025 coverage=96/96
+[INFO] No improvement in F1 for 1 epoch(s).
+
+============================================================
+[TEST] Best-checkpoint summary | epoch=0 | val F1=0.0090
+[TEST] Test docs: 10 from dev.json
+[TEST] F1 (best-checkpoint): 0.0125
+[TEST] macro_f1=0.0117 tail_f1(head/med/tail)=0.0474/0.0061/0.0043 coverage=96/96
+wandb: uploading artifact moe_train_20260318_102951_e7032d60_best_ckpt_final; updating run metadata
+wandb: ERROR Control-C detected -- Run data was not synced
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 2756, in <module>
+    main()
+  File "/workspace/moe.py", line 2749, in main
+    finish_run()
+  File "/workspace/wandb_utils.py", line 98, in finish_run
+    wandb.finish()
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 4102, in finish
+    wandb.run.finish(exit_code=exit_code, quiet=quiet)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 399, in wrapper
+    return func(self, *args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 444, in wrapper
+    return func(self, *args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2279, in finish
+    return self._finish(exit_code)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 399, in wrapper
+    return func(self, *args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2307, in _finish
+    self._atexit_cleanup(exit_code=exit_code)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2501, in _atexit_cleanup
+    self._on_finish()
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2725, in _on_finish
+    wait_with_progress(
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 24, in wait_with_progress
+    return wait_all_with_progress(
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 78, in wait_all_with_progress
+    return asyncer.run(progress_loop_with_timeout)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/lib/asyncio_manager.py", line 137, in run
+    return future.result()
+  File "/venv/moe/lib/python3.10/concurrent/futures/_base.py", line 453, in result
+    self._condition.wait(timeout)
+  File "/venv/moe/lib/python3.10/threading.py", line 320, in wait
+    waiter.acquire()
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 2756, in <module>
+    main()
+  File "/workspace/moe.py", line 2749, in main
+    finish_run()
+  File "/workspace/wandb_utils.py", line 98, in finish_run
+    wandb.finish()
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 4102, in finish
+    wandb.run.finish(exit_code=exit_code, quiet=quiet)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 399, in wrapper
+    return func(self, *args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 444, in wrapper
+    return func(self, *args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2279, in finish
+    return self._finish(exit_code)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 399, in wrapper
+    return func(self, *args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2307, in _finish
+    self._atexit_cleanup(exit_code=exit_code)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2501, in _atexit_cleanup
+    self._on_finish()
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/wandb_run.py", line 2725, in _on_finish
+    wait_with_progress(
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 24, in wait_with_progress
+    return wait_all_with_progress(
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 78, in wait_all_with_progress
+    return asyncer.run(progress_loop_with_timeout)
+  File "/venv/moe/lib/python3.10/site-packages/wandb/sdk/lib/asyncio_manager.py", line 137, in run
+    return future.result()
+  File "/venv/moe/lib/python3.10/concurrent/futures/_base.py", line 453, in result
+    self._condition.wait(timeout)
+  File "/venv/moe/lib/python3.10/threading.py", line 320, in wait
+    waiter.acquire()
+KeyboardInterrupt
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mmoe_train_20260318_102951_e7032d60[0m at: [34mhttps://wandb.ai/21522798-uit/docie-ner-re-pipeline/runs/cear5ity[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20260318_102952-cear5ity/logs[0m

@@ -1,0 +1,69 @@
+Seed set to 42
+[HF] Using cache root: /tmp/hf_home
+[ARGS] stage=train epochs=1 debug=True full_train=False full_eval=False
+[INFO] CPU + debug/overfit detected, using smaller model: sshleifer/tiny-gpt2
+Using device: cpu
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading LLM... (CPU fp32)
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights:   3%|▎         | 1/29 [00:00<00:00, 22795.13it/s, Materializing param=lm_head.weight]Loading weights:   3%|▎         | 1/29 [00:00<00:00, 8322.03it/s, Materializing param=lm_head.weight] Loading weights:   7%|▋         | 2/29 [00:00<00:00, 8594.89it/s, Materializing param=transformer.h.0.attn.c_attn.bias]Loading weights:   7%|▋         | 2/29 [00:00<00:00, 6792.40it/s, Materializing param=transformer.h.0.attn.c_attn.bias]Loading weights:  10%|█         | 3/29 [00:00<00:00, 7616.77it/s, Materializing param=transformer.h.0.attn.c_attn.weight]Loading weights:  10%|█         | 3/29 [00:00<00:00, 6714.47it/s, Materializing param=transformer.h.0.attn.c_attn.weight]Loading weights:  14%|█▍        | 4/29 [00:00<00:00, 7493.17it/s, Materializing param=transformer.h.0.attn.c_proj.bias]  Loading weights:  14%|█▍        | 4/29 [00:00<00:00, 6836.68it/s, Materializing param=transformer.h.0.attn.c_proj.bias]Loading weights:  17%|█▋        | 5/29 [00:00<00:00, 7465.83it/s, Materializing param=transformer.h.0.attn.c_proj.weight]Loading weights:  17%|█▋        | 5/29 [00:00<00:00, 6935.03it/s, Materializing param=transformer.h.0.attn.c_proj.weight]Loading weights:  21%|██        | 6/29 [00:00<00:00, 7460.96it/s, Materializing param=transformer.h.0.ln_1.bias]         Loading weights:  21%|██        | 6/29 [00:00<00:00, 7043.33it/s, Materializing param=transformer.h.0.ln_1.bias]Loading weights:  24%|██▍       | 7/29 [00:00<00:00, 7526.31it/s, Materializing param=transformer.h.0.ln_1.weight]Loading weights:  24%|██▍       | 7/29 [00:00<00:00, 7148.80it/s, Materializing param=transformer.h.0.ln_1.weight]Loading weights:  28%|██▊       | 8/29 [00:00<00:00, 7560.71it/s, Materializing param=transformer.h.0.ln_2.bias]  Loading weights:  28%|██▊       | 8/29 [00:00<00:00, 7236.24it/s, Materializing param=transformer.h.0.ln_2.bias]Loading weights:  31%|███       | 9/29 [00:00<00:00, 7609.10it/s, Materializing param=transformer.h.0.ln_2.weight]Loading weights:  31%|███       | 9/29 [00:00<00:00, 7314.23it/s, Materializing param=transformer.h.0.ln_2.weight]Loading weights:  34%|███▍      | 10/29 [00:00<00:00, 7639.90it/s, Materializing param=transformer.h.0.mlp.c_fc.bias]Loading weights:  34%|███▍      | 10/29 [00:00<00:00, 7362.30it/s, Materializing param=transformer.h.0.mlp.c_fc.bias]Loading weights:  38%|███▊      | 11/29 [00:00<00:00, 7639.90it/s, Materializing param=transformer.h.0.mlp.c_fc.weight]Loading weights:  38%|███▊      | 11/29 [00:00<00:00, 7390.25it/s, Materializing param=transformer.h.0.mlp.c_fc.weight]Loading weights:  41%|████▏     | 12/29 [00:00<00:00, 7649.19it/s, Materializing param=transformer.h.0.mlp.c_proj.bias]Loading weights:  41%|████▏     | 12/29 [00:00<00:00, 7419.17it/s, Materializing param=transformer.h.0.mlp.c_proj.bias]Loading weights:  45%|████▍     | 13/29 [00:00<00:00, 7657.06it/s, Materializing param=transformer.h.0.mlp.c_proj.weight]Loading weights:  45%|████▍     | 13/29 [00:00<00:00, 7442.80it/s, Materializing param=transformer.h.0.mlp.c_proj.weight]Loading weights:  48%|████▊     | 14/29 [00:00<00:00, 7658.83it/s, Materializing param=transformer.h.1.attn.c_attn.bias] Loading weights:  48%|████▊     | 14/29 [00:00<00:00, 7462.23it/s, Materializing param=transformer.h.1.attn.c_attn.bias]Loading weights:  52%|█████▏    | 15/29 [00:00<00:00, 7666.90it/s, Materializing param=transformer.h.1.attn.c_attn.weight]Loading weights:  52%|█████▏    | 15/29 [00:00<00:00, 7484.48it/s, Materializing param=transformer.h.1.attn.c_attn.weight]Loading weights:  55%|█████▌    | 16/29 [00:00<00:00, 7649.48it/s, Materializing param=transformer.h.1.attn.c_proj.bias]  Loading weights:  55%|█████▌    | 16/29 [00:00<00:00, 7473.98it/s, Materializing param=transformer.h.1.attn.c_proj.bias]Loading weights:  59%|█████▊    | 17/29 [00:00<00:00, 7652.20it/s, Materializing param=transformer.h.1.attn.c_proj.weight]Loading weights:  59%|█████▊    | 17/29 [00:00<00:00, 7485.11it/s, Materializing param=transformer.h.1.attn.c_proj.weight]Loading weights:  62%|██████▏   | 18/29 [00:00<00:00, 7649.96it/s, Materializing param=transformer.h.1.ln_1.bias]         Loading weights:  62%|██████▏   | 18/29 [00:00<00:00, 7494.29it/s, Materializing param=transformer.h.1.ln_1.bias]Loading weights:  66%|██████▌   | 19/29 [00:00<00:00, 7661.93it/s, Materializing param=transformer.h.1.ln_1.weight]Loading weights:  66%|██████▌   | 19/29 [00:00<00:00, 7512.42it/s, Materializing param=transformer.h.1.ln_1.weight]Loading weights:  69%|██████▉   | 20/29 [00:00<00:00, 7666.43it/s, Materializing param=transformer.h.1.ln_2.bias]  Loading weights:  69%|██████▉   | 20/29 [00:00<00:00, 7526.12it/s, Materializing param=transformer.h.1.ln_2.bias]Loading weights:  72%|███████▏  | 21/29 [00:00<00:00, 7675.85it/s, Materializing param=transformer.h.1.ln_2.weight]Loading weights:  72%|███████▏  | 21/29 [00:00<00:00, 7543.71it/s, Materializing param=transformer.h.1.ln_2.weight]Loading weights:  76%|███████▌  | 22/29 [00:00<00:00, 7685.07it/s, Materializing param=transformer.h.1.mlp.c_fc.bias]Loading weights:  76%|███████▌  | 22/29 [00:00<00:00, 7558.54it/s, Materializing param=transformer.h.1.mlp.c_fc.bias]Loading weights:  79%|███████▉  | 23/29 [00:00<00:00, 7689.22it/s, Materializing param=transformer.h.1.mlp.c_fc.weight]Loading weights:  79%|███████▉  | 23/29 [00:00<00:00, 7565.01it/s, Materializing param=transformer.h.1.mlp.c_fc.weight]Loading weights:  83%|████████▎ | 24/29 [00:00<00:00, 7683.63it/s, Materializing param=transformer.h.1.mlp.c_proj.bias]Loading weights:  83%|████████▎ | 24/29 [00:00<00:00, 7565.82it/s, Materializing param=transformer.h.1.mlp.c_proj.bias]Loading weights:  86%|████████▌ | 25/29 [00:00<00:00, 7683.00it/s, Materializing param=transformer.h.1.mlp.c_proj.weight]Loading weights:  86%|████████▌ | 25/29 [00:00<00:00, 7567.67it/s, Materializing param=transformer.h.1.mlp.c_proj.weight]Loading weights:  90%|████████▉ | 26/29 [00:00<00:00, 7681.33it/s, Materializing param=transformer.ln_f.bias]            Loading weights:  90%|████████▉ | 26/29 [00:00<00:00, 7570.95it/s, Materializing param=transformer.ln_f.bias]Loading weights:  93%|█████████▎| 27/29 [00:00<00:00, 7693.36it/s, Materializing param=transformer.ln_f.weight]Loading weights:  93%|█████████▎| 27/29 [00:00<00:00, 7588.70it/s, Materializing param=transformer.ln_f.weight]Loading weights:  97%|█████████▋| 28/29 [00:00<00:00, 7705.56it/s, Materializing param=transformer.wpe.weight] Loading weights:  97%|█████████▋| 28/29 [00:00<00:00, 7603.30it/s, Materializing param=transformer.wpe.weight]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 7710.12it/s, Materializing param=transformer.wte.weight]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 7611.21it/s, Materializing param=transformer.wte.weight]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 7415.40it/s, Materializing param=transformer.wte.weight]
+The tied weights mapping and config for this model specifies to tie transformer.wte.weight to lm_head.weight, but both are present in the checkpoints, so we will NOT tie them. You should update the config with `tie_word_embeddings=False` to silence this warning
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+The new lm_head weights will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 1440, in <module>
+    main()
+  File "/workspace/moe.py", line 1165, in main
+    lora_model = get_peft_model(
+  File "/venv/moe/lib/python3.10/site-packages/peft/mapping_func.py", line 122, in get_peft_model
+    return MODEL_TYPE_TO_PEFT_MODEL_MAPPING[peft_config.task_type](
+  File "/venv/moe/lib/python3.10/site-packages/peft/peft_model.py", line 2966, in __init__
+    super().__init__(model, peft_config, adapter_name, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/peft/peft_model.py", line 129, in __init__
+    self.base_model = cls(model, {adapter_name: peft_config}, adapter_name)
+  File "/venv/moe/lib/python3.10/site-packages/peft/tuners/tuners_utils.py", line 298, in __init__
+    self.inject_adapter(self.model, adapter_name, low_cpu_mem_usage=low_cpu_mem_usage, state_dict=state_dict)
+  File "/venv/moe/lib/python3.10/site-packages/peft/tuners/tuners_utils.py", line 804, in inject_adapter
+    self._create_and_replace(
+  File "/venv/moe/lib/python3.10/site-packages/peft/tuners/lora/model.py", line 250, in _create_and_replace
+    new_module = self._create_new_module(lora_config, adapter_name, target, device_map=device_map, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/peft/tuners/lora/model.py", line 312, in _create_new_module
+    from .bnb import dispatch_bnb_8bit
+  File "/venv/moe/lib/python3.10/site-packages/peft/tuners/lora/bnb.py", line 19, in <module>
+    import bitsandbytes as bnb
+  File "/venv/moe/lib/python3.10/site-packages/bitsandbytes/__init__.py", line 19, in <module>
+    from .backends.default import ops as default_ops
+  File "/venv/moe/lib/python3.10/site-packages/bitsandbytes/backends/default/ops.py", line 363, in <module>
+    def _optimizer_precondition_32bit(
+  File "/venv/moe/lib/python3.10/site-packages/bitsandbytes/backends/default/ops.py", line 35, in _try_torch_compile
+    return decorator(func)
+  File "/venv/moe/lib/python3.10/site-packages/bitsandbytes/backends/default/ops.py", line 19, in decorator
+    compiled_fn = torch.compile(fn, **compile_kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/lightning/fabric/wrappers.py", line 406, in _capture
+    return compile_fn(*args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/torch/__init__.py", line 2745, in compile
+    return torch._dynamo.optimize(
+  File "/venv/moe/lib/python3.10/site-packages/torch/_dynamo/eval_frame.py", line 1404, in optimize
+    return _optimize(rebuild_ctx, *args, **kwargs)
+  File "/venv/moe/lib/python3.10/site-packages/torch/_dynamo/eval_frame.py", line 1508, in _optimize
+    backend.get_compiler_config()
+  File "/venv/moe/lib/python3.10/site-packages/torch/__init__.py", line 2438, in get_compiler_config
+    from torch._inductor.compile_fx import get_patched_config_dict
+  File "/venv/moe/lib/python3.10/site-packages/torch/_inductor/compile_fx.py", line 69, in <module>
+    from torch._inductor.debug import (
+  File "/venv/moe/lib/python3.10/site-packages/torch/_inductor/debug.py", line 36, in <module>
+    from . import config, ir  # noqa: F811, this is needed
+  File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1006, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 688, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 879, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1012, in get_code
+  File "<frozen importlib._bootstrap_external>", line 672, in _compile_bytecode
+KeyboardInterrupt

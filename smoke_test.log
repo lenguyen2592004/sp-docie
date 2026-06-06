@@ -1,0 +1,71 @@
+Seed set to 42
+[HF] Using cache root: /tmp/hf_home
+[ARGS] stage=train epochs=2 debug=True full_train=False full_eval=False
+[INFO] CPU + debug/overfit detected, using smaller model: sshleifer/tiny-gpt2
+Using device: cpu
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: Appending key for api.wandb.ai to your netrc file: /root/.netrc
+wandb: Currently logged in as: 22520982 (21522798-uit) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run wrvv5upd
+wandb: Tracking run with wandb version 0.25.1
+wandb: Run data is saved locally in /workspace/wandb/run-20260318_102902-wrvv5upd
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run moe_train_20260318_102901_63b923ae
+wandb: ⭐️ View project at https://wandb.ai/21522798-uit/docie-ner-re-pipeline
+wandb: 🚀 View run at https://wandb.ai/21522798-uit/docie-ner-re-pipeline/runs/wrvv5upd
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_train_20260318_102901_63b923ae_result.json
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_train_20260318_102901_63b923ae/best_model.pt
+[W&B] Uploaded workspace artifact: moe_train_20260318_102901_63b923ae_workspace (96 files)
+Loading LLM... (CPU fp32)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 48325.31it/s]
+The tied weights mapping and config for this model specifies to tie transformer.wte.weight to lm_head.weight, but both are present in the checkpoints, so we will NOT tie them. You should update the config with `tie_word_embeddings=False` to silence this warning
+[1mGPT2LMHeadModel LOAD REPORT[0m from: sshleifer/tiny-gpt2
+Key                                   | Status     |  | 
+--------------------------------------+------------+--+-
+transformer.h.{0, 1}.attn.masked_bias | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+The new lm_head weights will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+/venv/moe/lib/python3.10/site-packages/peft/tuners/lora/layer.py:2285: UserWarning: fan_in_fan_out is set to False but the target module is `Conv1D`. Setting fan_in_fan_out to True.
+  warnings.warn(
+Model device: cpu
+Prototypes device: cpu
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 2756, in <module>
+    main()
+  File "/workspace/moe.py", line 2342, in main
+    distant_clean = load_json_robust(args.distant_clean_file)
+  File "/workspace/moe.py", line 433, in load_json_robust
+    return json.load(f)
+  File "/venv/moe/lib/python3.10/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+  File "/venv/moe/lib/python3.10/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/venv/moe/lib/python3.10/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/venv/moe/lib/python3.10/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/workspace/moe.py", line 2756, in <module>
+    main()
+  File "/workspace/moe.py", line 2342, in main
+    distant_clean = load_json_robust(args.distant_clean_file)
+  File "/workspace/moe.py", line 433, in load_json_robust
+    return json.load(f)
+  File "/venv/moe/lib/python3.10/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+  File "/venv/moe/lib/python3.10/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/venv/moe/lib/python3.10/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/venv/moe/lib/python3.10/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+KeyboardInterrupt
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mmoe_train_20260318_102901_63b923ae[0m at: [34mhttps://wandb.ai/21522798-uit/docie-ner-re-pipeline/runs/wrvv5upd[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20260318_102902-wrvv5upd/logs[0m

@@ -93,6 +93,7 @@ To run the full pipeline with all data, execute the following commands:
    --full-train \
    --full-eval \
    --full-test \
+   --pretrained-gnn-checkpoint "<wandb_artifact_url_or_ref>" \
    --no-pair-markers \
    --result-dir inference_results \
    --result-file result.json
@@ -195,6 +196,8 @@ python -u moe.py \
 --full-train \
 --full-eval \
 --full-test \
+--pretrained-gnn-checkpoint "<wandb_artifact_url_or_ref>" \
+--no-pair-markers \
 --result-dir inference_results \
 --result-file result.json
 ```

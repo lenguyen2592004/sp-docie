@@ -1,0 +1,49 @@
+[HF] Using cache root: /tmp/hf_home
+[ARGS] stage=train epochs=10 debug=True full_train=False full_eval=False
+[INFO] CPU + debug/overfit detected, using smaller model: sshleifer/tiny-gpt2
+Using device: cpu
+⚠️ wandb package API not available (likely shadowed by local folder). Logging disabled.
+[CKPT] Removed old checkpoint dir: /workspace/checkpoints/moe_train_20260323_055615_c8b73baf
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_train_20260323_055832_17b2f892_result_postfix.json
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_train_20260323_055832_17b2f892/best_model.pt
+[W&B] Uploaded workspace artifact: moe_train_20260323_055832_17b2f892_workspace (159 files, contains_moe_py=True)
+Loading LLM... (CPU fp32)
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`
+Model device: cpu
+Prototypes device: cpu
+[SPLIT] train_file split ratio=0.80 seed=42 -> train=2442 val=611
+[DATA] Train docs: 20/2442 (full=False)
+[DATA] Eval  docs: 1/611 (new val split, full=False)
+[DATA] Test docs: 1/998 (full=False)
+/venv/main/lib/python3.12/site-packages/torch/cuda/__init__.py:230: UserWarning: 
+NVIDIA GeForce RTX 5090 with CUDA capability sm_120 is not compatible with the current PyTorch installation.
+The current PyTorch install supports CUDA capabilities sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90.
+If you want to use the NVIDIA GeForce RTX 5090 GPU with PyTorch, please check the instructions at https://pytorch.org/get-started/locally/
+
+  warnings.warn(
+[WARN] Recovered partial JSON from train_distant.json: 20308 items
+[LONG-TAIL] Seen relations in train: 42/96 | buckets head=11 medium=7 tail=78
+[SCHEDULE] LoRA epochs=0 | GNN epochs=1 | Total=1
+[PHASE] GNN phase active | lr=5e-05
+E 0 (gnn) | D 0 | L: 66.8572
+E 0 (gnn) | D 10 | L: 63.2693
+
+Evaluating ... 1 docs
+Epoch 0 F1: 0.0000
+[EVAL] macro_f1=0.0000 tail_f1(head/med/tail)=0.0000/0.0000/0.0000 coverage=74/96
+
+Evaluating ... 1 docs
+[INFER-DEBUG] Output sample after inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "P17", "evidence": [4]}
+[INFER-DEBUG] Input sample before inference:
+{"title": "Skai TV", "h_idx": 0, "t_idx": 9, "r": "NA", "evidence": [4]}
+[INFER-DEBUG] Saved inference output to /workspace/inference_results/moe_train_20260323_055832_17b2f892_result_postfix.json (872 items)
+[BEST] Updated best checkpoint at epoch 0 | val F1=0.0000 | test F1=0.0137
+
+============================================================
+[TEST] Best-checkpoint summary | epoch=0 | val F1=0.0000
+[TEST] Test docs: 1 from dev.json
+[TEST] F1 (best-checkpoint): 0.0137
+[TEST] macro_f1=0.0052 tail_f1(head/med/tail)=0.0251/0.0000/0.0029 coverage=71/96
+[TEST-OFFICIAL] F1-RE=0.0137 F1-Evidence=0.0152 RE_ignore_annotated_F1=0.0091 RE_ignore_distant_F1=0.0091
+[W&B] Uploaded inference_results artifact: moe_train_20260323_055832_17b2f892_inference_results (16 json files)

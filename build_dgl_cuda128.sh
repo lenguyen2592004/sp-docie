@@ -14,7 +14,7 @@ PIP_BIN=$(which pip)
 PYTHON_BIN_DIR=$(dirname "${PYTHON_BIN}")
 # Lấy site-packages path tự động
 SITE_PACKAGES=$($PYTHON_BIN -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
-BUILD_JOBS="${DGL_BUILD_JOBS:-$(nproc)}"
+BUILD_JOBS="${DGL_BUILD_JOBS:-1}"
 FORCE_SOURCE_BUILD="${FORCE_DGL_SOURCE_BUILD:-0}"
 
 mkdir -p "${TMP_ROOT_DIR}"

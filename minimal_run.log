@@ -1,0 +1,11 @@
+[HF] Using cache root: /tmp/hf_home
+[ARGS] stage=train epochs=10 debug=True full_train=False full_eval=False
+[INFO] CPU + debug/overfit detected, using smaller model: sshleifer/tiny-gpt2
+Using device: cpu
+⚠️ wandb package API not available (likely shadowed by local folder). Logging disabled.
+[CKPT] Removed old checkpoint dir: /workspace/checkpoints/moe_overfit_20260323_054717_e9d3974d
+[RESULT] Inference outputs will be saved to: /workspace/inference_results/moe_train_20260323_055009_7bb139ab_result_minimal.json
+[CKPT] Best checkpoint path: /workspace/checkpoints/moe_train_20260323_055009_7bb139ab/best_model.pt
+[WARN] Failed to upload workspace snapshot to W&B: module 'wandb' has no attribute 'Artifact'
+Loading LLM... (CPU fp32)
+The new embeddings will be initialized from a multivariate normal distribution that has old embeddings' mean and covariance. As described in this article: https://nlp.stanford.edu/~johnhew/vocab-expansion.html. To disable this, use `mean_resizing=False`

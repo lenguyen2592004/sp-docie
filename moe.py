@@ -17,8 +17,8 @@ CURRENT PIPELINE (implemented):
               └─► Pair subgraph construction
                   └─► Sparse MoE with Graph Attention Transformer experts
                       ├─► Multi-label training: Focal Loss
-                      ├─► Stochastic Path Pruning (SPP) sparsity regularization
-                      └─► Shortest Dependency Path (SDP) encoding
+                      ├─► Router load-balance loss (Switch-style)
+                      └─► Structural contrastive prototype alignment
 
 INFERENCE / EVAL BEHAVIOR:
     - Multi-label prediction via sigmoid + threshold.
@@ -154,11 +154,6 @@ except ImportError:
     LoraConfig = None
     TaskType = None
 
-try:
-    from transformers import get_linear_schedule_with_warmup
-except ImportError:
-    get_linear_schedule_with_warmup = None
-
 import sys
 import random
 import shutil
@@ -207,86 +202,29 @@ try:
 except Exception:
     _wandb_utils_module = None
 
-    def init_wandb_run(run_name, config, project=None, entity=None, api_key=None, mode='online', allow_offline_fallback=True):
-        if wandb is None:
-            return False
-        try:
-            if api_key and hasattr(wandb, 'login'):
-                wandb.login(key=str(api_key), relogin=True)
-            wandb.init(
-                project=project,
-                entity=entity,
-                name=run_name,
-                config=config,
-                mode=mode,
-            )
-            return True
-        except Exception as e:
-            if allow_offline_fallback:
-                try:
-                    wandb.init(
-                        project=project,
-                        entity=entity,
-                        name=run_name,
-                        config=config,
-                        mode='offline',
-                    )
-                    print(f"[W&B] Online init failed ({e}), running in offline mode.")
-                    return True
-                except Exception:
-                    return False
-            return False
+    def init_wandb_run(*args, **kwargs):
+        return False
 
-    def log_metrics(metrics_dict, step=None):
-        if wandb is not None and getattr(wandb, 'run', None) is not None:
-            wandb.log(metrics_dict, step=step)
-
-    def log_system_metrics(prefix='system'):
+    def log_metrics(*args, **kwargs):
         return None
 
-    def save_model_artifact(path, name=None, artifact_type='model'):
-        if wandb is None or not os.path.exists(path):
-            return False
-        try:
-            art = wandb.Artifact(name or os.path.basename(path), type=artifact_type)
-            if os.path.isdir(path):
-                art.add_dir(path)
-            else:
-                art.add_file(path)
-            wandb.log_artifact(art)
-            return True
-        except Exception:
-            return False
+    def log_system_metrics(*args, **kwargs):
+        return None
 
-    def save_evaluation_artifact(payload, path, artifact_name=None):
-        if wandb is None:
-            return False
-        try:
-            art = wandb.Artifact(artifact_name or os.path.basename(path), type='evaluation')
-            art.add_file(path)
-            wandb.log_artifact(art)
-            return True
-        except Exception:
-            return False
+    def save_model_artifact(*args, **kwargs):
+        return False
 
-    def finish_run():
-        if wandb is not None:
-            try:
-                wandb.finish()
-            except Exception:
-                pass
+    def save_evaluation_artifact(*args, **kwargs):
+        return False
+
+    def finish_run(*args, **kwargs):
+        return None
 
 from config import Config
 try:
     import wandb
 except ImportError:
     wandb = None
-
-try:
-    from augment import DocParaphraser, quick_entity_presence_filter
-except Exception:
-    DocParaphraser = None
-    quick_entity_presence_filter = None
 
 # Monkey-patch set_submodule if missing
 if not hasattr(nn.Module, "set_submodule"):
@@ -432,164 +370,6 @@ def extract_marker_pair_features(outputs, encodings, e1_id, e2_id):
         feats.append(torch.cat([h_vec, t_vec]))
         mask.append(True)
     return torch.stack(feats), torch.tensor(mask, device=hidden.device)
-
-
-class EvidenceHead(nn.Module):
-    # B11: per-pair sentence-as-evidence head. Same head also drives B3 attention-distillation.
-    def __init__(self, hidden_dim, proj_dim=128, dropout=0.1):
-        super().__init__()
-        self.proj = nn.Linear(hidden_dim, proj_dim)
-        self.mlp = nn.Sequential(
-            nn.Linear(proj_dim * 5, proj_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(proj_dim, 1),
-        )
-
-    def forward(self, h_feats, t_feats, sent_feats):
-        # h_feats: (B, D), t_feats: (B, D), sent_feats: (S, D)
-        h_p = self.proj(h_feats.float())
-        t_p = self.proj(t_feats.float())
-        s_p = self.proj(sent_feats.float())
-        B = h_p.shape[0]
-        S = s_p.shape[0]
-        if S == 0 or B == 0:
-            return h_p.new_zeros((B, S))
-        h_exp = h_p.unsqueeze(1).expand(-1, S, -1)
-        t_exp = t_p.unsqueeze(1).expand(-1, S, -1)
-        s_exp = s_p.unsqueeze(0).expand(B, -1, -1)
-        x = torch.cat([h_exp, t_exp, s_exp, h_exp * t_exp, h_exp - t_exp], dim=-1)
-        return self.mlp(x).squeeze(-1)
-
-
-def compute_sentence_embeddings(doc_emb, word_ids, item):
-    """Mean-pool doc_emb tokens within each sentence span -> (S, D)."""
-    sents = item.get('sents', [])
-    if not sents:
-        return torch.zeros(0, doc_emb.shape[-1], device=doc_emb.device, dtype=doc_emb.dtype)
-    sent_offsets = [0]
-    for s in sents:
-        sent_offsets.append(sent_offsets[-1] + len(s))
-    word_to_tokens = {}
-    for tok_idx, w_idx in enumerate(word_ids):
-        if w_idx is not None:
-            word_to_tokens.setdefault(w_idx, []).append(tok_idx)
-    sent_embeds = []
-    hidden_dim = doc_emb.shape[-1]
-    for sid in range(len(sents)):
-        start, end = sent_offsets[sid], sent_offsets[sid + 1]
-        tok_indices = []
-        for w in range(start, end):
-            if w in word_to_tokens:
-                tok_indices.extend(word_to_tokens[w])
-        if tok_indices:
-            idx_t = torch.tensor(tok_indices, device=doc_emb.device)
-            pooled = torch.index_select(doc_emb, 0, idx_t).float().mean(dim=0)
-            sent_embeds.append(pooled.to(doc_emb.dtype))
-        else:
-            sent_embeds.append(torch.zeros(hidden_dim, device=doc_emb.device, dtype=doc_emb.dtype))
-    return torch.stack(sent_embeds)
-
-
-def build_evidence_targets(pairs, labels, num_sents, device):
-    """For each (h,t) pair, union of evidence sentence ids across its labels."""
-    pair_to_evi = defaultdict(set)
-    for lbl in labels:
-        try:
-            h = int(lbl.get('h', -1))
-            t = int(lbl.get('t', -1))
-        except Exception:
-            continue
-        if h < 0 or t < 0:
-            continue
-        for e in lbl.get('evidence', []) or []:
-            try:
-                e_int = int(e)
-            except Exception:
-                continue
-            if 0 <= e_int < num_sents:
-                pair_to_evi[(h, t)].add(e_int)
-    targets = torch.zeros((len(pairs), num_sents), device=device)
-    has_evi = torch.zeros(len(pairs), dtype=torch.bool, device=device)
-    for i, p in enumerate(pairs):
-        evis = pair_to_evi.get(p)
-        if evis:
-            for sid in evis:
-                targets[i, sid] = 1.0
-            has_evi[i] = True
-    return targets, has_evi
-
-
-def evidence_loss_fn(logits, targets, has_evidence, kl_weight=1.0):
-    """B11 BCE per sentence + B3 KL between softmax(logits) and normalized evidence target."""
-    if logits.numel() == 0 or not bool(has_evidence.any()):
-        return logits.new_zeros(())
-    mask = has_evidence
-    m_logits = logits[mask]
-    m_targets = targets[mask]
-    bce = F.binary_cross_entropy_with_logits(m_logits, m_targets, reduction='mean')
-    target_dist = m_targets / m_targets.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-    log_pred = F.log_softmax(m_logits, dim=-1)
-    kl = F.kl_div(log_pred, target_dist, reduction='batchmean')
-    return bce + float(kl_weight) * kl
-
-
-def compute_pair_marker_features_from_doc(doc_emb, word_ids, item, pairs):
-    # A4: pool head/tail mention tokens directly from cached doc_emb instead of re-encoding.
-    vertex_set = item.get('vertex_set', item.get('vertexSet', []))
-    sents = item.get('sents', [])
-    sent_offsets = [0]
-    total = 0
-    for s in sents:
-        total += len(s)
-        sent_offsets.append(total)
-
-    def _to_global_span(m):
-        sid = int(m.get('sent_id', 0))
-        start, end = int(m['pos'][0]), int(m['pos'][1])
-        if sid < 0 or sid >= len(sent_offsets) - 1:
-            return start, end
-        base = sent_offsets[sid]
-        return base + start, base + end
-
-    word_to_tokens = {}
-    for token_idx, w_idx in enumerate(word_ids):
-        if w_idx is not None:
-            word_to_tokens.setdefault(w_idx, []).append(token_idx)
-
-    hidden_dim = doc_emb.shape[-1]
-
-    def _pool_entity(entity_mentions):
-        mention_token_idx = []
-        for m in entity_mentions:
-            start, end = _to_global_span(m)
-            for w in range(start, end):
-                if w in word_to_tokens:
-                    mention_token_idx.extend(word_to_tokens[w])
-        if not mention_token_idx:
-            return None
-        idx_t = torch.tensor(mention_token_idx, device=doc_emb.device)
-        toks = torch.index_select(doc_emb, 0, idx_t).float()
-        # LogSumExp pool to preserve signal from every mention occurrence (B4).
-        pooled = torch.logsumexp(toks, dim=0)
-        return pooled.to(doc_emb.dtype)
-
-    feats = []
-    masks = []
-    for h_idx, t_idx in pairs:
-        if h_idx >= len(vertex_set) or t_idx >= len(vertex_set):
-            feats.append(torch.zeros(hidden_dim * 2, device=doc_emb.device, dtype=doc_emb.dtype))
-            masks.append(False)
-            continue
-        h_vec = _pool_entity(vertex_set[h_idx])
-        t_vec = _pool_entity(vertex_set[t_idx])
-        if h_vec is None or t_vec is None:
-            feats.append(torch.zeros(hidden_dim * 2, device=doc_emb.device, dtype=doc_emb.dtype))
-            masks.append(False)
-        else:
-            feats.append(torch.cat([h_vec, t_vec]))
-            masks.append(True)
-    return torch.stack(feats), torch.tensor(masks, device=doc_emb.device)
 
 def collate_fn(batch, tokenizer, max_length=1024):
     """
@@ -738,10 +518,6 @@ TYPE_CONSTRAINTS = {
     "P264": ({"MISC", "WORK"}, {"ORG"}),
 }
 
-# Symmetric relations (B6)
-SYMMETRIC_RELATIONS = {"P26", "P3373", "P190"}
-INVERSE_PAIRS = [("P155", "P156"), ("P1365", "P1366"), ("P361", "P527")]
-
 
 def _entity_type_set(entity_mentions):
     return {str(m.get("type", "MISC")) for m in entity_mentions}
@@ -752,29 +528,6 @@ def _relation_type_allowed(rel, h_types, t_types):
         return True
     h_ok, t_ok = TYPE_CONSTRAINTS[rel]
     return (len(h_ok.intersection(h_types)) > 0) and (len(t_ok.intersection(t_types)) > 0)
-
-
-def _pair_matches_any_type_constraint(pair, vertex_set):
-    """Return True if the entity type-pair of (h,t) matches at least one relation constraint."""
-    h_types = _entity_type_set(vertex_set[pair[0]])
-    t_types = _entity_type_set(vertex_set[pair[1]])
-    for rel_name in TYPE_CONSTRAINTS:
-        if _relation_type_allowed(rel_name, h_types, t_types):
-            return True
-    return False
-
-
-def build_type_soft_mask(pairs, vertex_set, rel2id, device, mask_value=-5.0):
-    """Build soft mask that penalizes incompatible relation logits by mask_value."""
-    mask = torch.zeros(len(pairs), len(rel2id), device=device)
-    for idx, (h, t) in enumerate(pairs):
-        h_types = _entity_type_set(vertex_set[h])
-        t_types = _entity_type_set(vertex_set[t])
-        for rel_name in TYPE_CONSTRAINTS:
-            if rel_name in rel2id:
-                if not _relation_type_allowed(rel_name, h_types, t_types):
-                    mask[idx, rel2id[rel_name]] = mask_value
-    return mask
 
 
 def load_json_robust(path):
@@ -915,19 +668,31 @@ def limit_candidates_preserve_must_keep(candidates, must_keep, max_pairs):
     return must + others[: max(0, eff_max - len(must))]
 
 
+def structural_contrastive_loss(pair_repr, label_multi_hot, prototypes, temperature=0.1):
+    """Prototype alignment for multi-label pairs using normalized multi-positive targets."""
+    valid_mask = label_multi_hot.sum(dim=-1) > 0
+    if valid_mask.sum() == 0:
+        return torch.zeros((), device=pair_repr.device, dtype=pair_repr.dtype)
+
+    z = F.normalize(pair_repr[valid_mask].float(), dim=-1)
+    targets = label_multi_hot[valid_mask].float()
+    targets = targets / (targets.sum(dim=-1, keepdim=True) + 1e-9)
+    proto = F.normalize(prototypes.get_all().float(), dim=-1)
+    sim = z @ proto.t()
+    logits = sim / max(1e-6, float(temperature))
+    log_probs = F.log_softmax(logits, dim=-1)
+    return -(targets * log_probs).sum(dim=-1).mean()
+
+
 def focal_loss_with_logits(
     logits,
     targets,
     gamma=2.0,
-    alpha=0.75,
-    pos_weight=None,
+    alpha=0.25,
     eps=1e-8,
-    reduction="sum_pos",
+    reduction="mean",
 ):
-    """Multi-label focal loss on logits.
-    reduction='sum_pos' => sum(loss) / max(1, num_positive_labels).
-    pos_weight: per-relation weight for positive classes (tensor of shape (num_classes,)).
-    """
+    """Multi-label focal loss on logits."""
     x = logits.float()
     y = targets.float()
 
@@ -941,20 +706,11 @@ def focal_loss_with_logits(
         alpha_t = alpha * y + (1.0 - alpha) * (1.0 - y)
 
     focal_weight = alpha_t * torch.pow((1.0 - pt).clamp(min=0.0), float(gamma))
-
-    if pos_weight is not None:
-        pos_weight = pos_weight.to(x.device)
-        bce = F.binary_cross_entropy_with_logits(x, y, pos_weight=pos_weight, reduction="none")
-    else:
-        bce = F.binary_cross_entropy_with_logits(x, y, reduction="none")
-
+    bce = F.binary_cross_entropy_with_logits(x, y, reduction="none")
     loss = focal_weight * bce
 
     if reduction == "sum":
         return loss.sum()
-    if reduction == "sum_pos":
-        num_pos = y.sum().clamp(min=1.0)
-        return loss.sum() / num_pos
     if reduction == "none":
         return loss
     return loss.mean()
@@ -971,17 +727,6 @@ def compute_relation_frequency(data, rel2id):
             if rel in rel2id:
                 freq[rel2id[rel]] += 1
     return freq
-
-
-def compute_pos_weights_from_freq(rel_freq, clamp_min=1.0, clamp_max=10.0):
-    """Compute per-relation pos_weight = sqrt(total_pos / freq_r), clamped."""
-    rel_freq = np.asarray(rel_freq, dtype=np.float64)
-    total_pos = float(rel_freq.sum())
-    if total_pos <= 0:
-        return torch.ones(len(rel_freq), dtype=torch.float32)
-    weights = np.sqrt(total_pos / np.maximum(1.0, rel_freq))
-    weights = np.clip(weights, clamp_min, clamp_max)
-    return torch.tensor(weights, dtype=torch.float32)
 
 
 def build_tail_buckets(rel_freq):
@@ -1212,30 +957,41 @@ class DocREDGraphBuilder:
     Construct k-hop entity pair subgraphs from document.
     
     Graph nodes: entities
-    Graph edges: co-occurrence in same sentence with direction and type
+    Graph edges: co-occurrence in same sentence
     Subgraph: k-hop neighborhood around (h, t) pair
     """
     def __init__(self, device):
         self.device = str(device)
 
     def build_pair_subgraph(self, item, llm_embeddings, word_ids, h_id, t_id, k_hop=1):
-        import collections
+        """
+        Build subgraph for entity pair (h_id, t_id).
+        
+        Args:
+            item: DocRED sample
+            llm_embeddings: (seq_len, hidden_dim) from LLM
+            word_ids: token-to-word alignment
+            h_id, t_id: head and tail entity indices
+            k_hop: neighborhood size
+            
+        Returns:
+            g: DGL graph with node features
+            adj: adjacency matrix (for FGW)
+            h_idx, t_idx: indices of h,t in subgraph
+        """
         vertex_set = item.get('vertex_set', item.get('vertexSet', []))
         num_entities = len(vertex_set)
         
         doc_adj = {}
-        edge_meta = {}
         for i in range(num_entities):
-            for j in range(num_entities):
-                if i == j:
-                    continue
+            for j in range(i + 1, num_entities):
                 sents_i = {m['sent_id'] for m in vertex_set[i]}
                 sents_j = {m['sent_id'] for m in vertex_set[j]}
                 if sents_i.intersection(sents_j):
                     if i not in doc_adj: doc_adj[i] = set()
+                    if j not in doc_adj: doc_adj[j] = set()
                     doc_adj[i].add(j)
-                    dir_id = 1 if i < j else 0
-                    edge_meta[(i, j)] = (0, dir_id)
+                    doc_adj[j].add(i)
 
         subgraph_nodes = {h_id, t_id}
         current_layer = {h_id, t_id}
@@ -1250,11 +1006,12 @@ class DocREDGraphBuilder:
         sorted_nodes = sorted(list(subgraph_nodes))
         if len(sorted_nodes) > 15:
             sorted_nodes = [h_id, t_id] + [n for n in sorted_nodes if n not in [h_id, t_id]][:13]
-            sorted_nodes = sorted(list(set(sorted_nodes)))
+            sorted_nodes = sorted(sorted_nodes)
 
         node_to_idx = {node: i for i, node in enumerate(sorted_nodes)}
         num_sub_nodes = len(sorted_nodes)
         
+        # Convert sentence-local mention spans to global doc word indices
         sents = item.get('sents', [])
         sent_offsets = [0]
         total = 0
@@ -1280,91 +1037,393 @@ class DocREDGraphBuilder:
         doc_context = llm_embeddings.mean(0)
         for entity_idx in sorted_nodes:
             entity_mentions = vertex_set[entity_idx]
-            # B4: LSE pool token embeddings of ALL mentions of this entity so multi-mention
-            # entities retain signal from every occurrence (helps inter-sentence pairs).
-            mention_token_indices = []
+            mention_embeds = []
             for m in entity_mentions:
                 start, end = to_global_span(m)
+                mention_token_indices = []
                 for w_idx in range(start, end):
-                    if w_idx in word_to_tokens:
-                        mention_token_indices.extend(word_to_tokens[w_idx])
-            if mention_token_indices:
-                indices_tensor = torch.tensor(mention_token_indices, device=llm_embeddings.device)
-                tok_embeds = torch.index_select(llm_embeddings, 0, indices_tensor).float()
-                pooled = torch.logsumexp(tok_embeds, dim=0)
-                node_feats.append(pooled.to(llm_embeddings.dtype))
+                    if w_idx in word_to_tokens: mention_token_indices.extend(word_to_tokens[w_idx])
+                if mention_token_indices:
+                    indices_tensor = torch.tensor(mention_token_indices).to(llm_embeddings.device)
+                    mention_embeds.append(torch.index_select(llm_embeddings, 0, indices_tensor).mean(0))
+            if mention_embeds:
+                node_feats.append(torch.stack(mention_embeds).mean(0))
             else:
+                # Mention can be truncated out of the token window; use doc context instead of all-zero vectors.
                 node_feats.append(doc_context)
         
         node_feats = torch.stack(node_feats) if node_feats else torch.zeros((1, llm_embeddings.shape[-1]), dtype=llm_embeddings.dtype, device=llm_embeddings.device)
 
         u_list, v_list = [], []
-        etype_list, edir_list = [], []
-        adj_local = {i: set() for i in range(num_sub_nodes)}
-        edge_index_map = {}
-        
+        adj = torch.zeros((num_sub_nodes, num_sub_nodes))
         for i, u_node in enumerate(sorted_nodes):
             for j, v_node in enumerate(sorted_nodes):
-                if i == j:
-                    continue
+                if i >= j: continue
                 if u_node in doc_adj and v_node in doc_adj[u_node]:
-                    u_list.append(i)
-                    v_list.append(j)
-                    et, ed = edge_meta.get((u_node, v_node), (0, 1))
-                    etype_list.append(et)
-                    edir_list.append(ed)
-                    adj_local[i].add(j)
-                    edge_index_map[(i, j)] = len(u_list) - 1
-        
-        for i in range(num_sub_nodes):
-            u_list.append(i)
-            v_list.append(i)
-            etype_list.append(1)
-            edir_list.append(2)
+                    u_list.extend([i, j])
+                    v_list.extend([j, i])
+                    adj[i, j] = adj[j, i] = 1.0
         
         if len(u_list) == 0:
             g = dgl.graph((torch.tensor([0]), torch.tensor([0])), num_nodes=num_sub_nodes)
         else:
             g = dgl.graph((torch.tensor(u_list), torch.tensor(v_list)), num_nodes=num_sub_nodes)
         
+        # In hybrid mode, LLM may be on CUDA while DGL stays on CPU.
+        # Always place graph + node features on graph builder device.
         graph_torch_device = torch.device(self.device)
         g = g.to(graph_torch_device)
+        g = dgl.add_self_loop(g)
         g.ndata['h'] = node_feats.to(graph_torch_device)
         g.ndata['is_ht'] = torch.tensor(
             [1.0 if n in [h_id, t_id] else 0.0 for n in sorted_nodes],
             device=graph_torch_device,
         )
-        g.edata['type'] = torch.tensor(etype_list, dtype=torch.long, device=graph_torch_device)
-        g.edata['dir'] = torch.tensor(edir_list, dtype=torch.long, device=graph_torch_device)
-        
-        start_idx = node_to_idx[h_id]
-        end_idx = node_to_idx[t_id]
-        queue = collections.deque([(start_idx, [])])
-        visited = {start_idx}
-        path_edges = []
-        while queue:
-            node, path = queue.popleft()
-            if node == end_idx:
-                path_edges = path
-                break
-            for neighbor in adj_local.get(node, []):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, path + [(node, neighbor)]))
-        
-        path_types = []
-        path_dirs = []
-        for u, v in path_edges:
-            idx = edge_index_map[(u, v)]
-            path_types.append(int(etype_list[idx]))
-            path_dirs.append(int(edir_list[idx]))
-        
-        return g, node_to_idx[h_id], node_to_idx[t_id], (path_types, path_dirs)
+        return g, adj, node_to_idx[h_id], node_to_idx[t_id]
 
 # ==========================================
-# 2. SP-GAT MODEL (Core Architecture)
+# 2. FGW UTILITIES (Entropic OT)
 # ==========================================
-from sp_gat import SPGATRE, sparsity_loss
+class RelationPrototype(nn.Module):
+    """
+    Learnable relation prototypes for structural contrastive alignment.
+    """
+    def __init__(self, num_relations, dim):
+        super().__init__()
+        self.num_relations = num_relations
+        self.proto = nn.Parameter(torch.randn(num_relations, dim) * 0.02)
+
+    def get(self, rel_id):
+        return self.proto[rel_id]
+
+    def get_all(self):
+        return self.proto
+
+
+def gcompute_fgw_distance(g1_nodes, g1_adj, g2_nodes, g2_adj, alpha=0.5, reg=0.05):
+    """
+    Entropic Fused Gromov-Wasserstein Distance (differentiable via POT Sinkhorn).
+    
+    Math: min_T (1-α)⟨T,M⟩ + α·GW(A,B,T) - ε·H(T)
+    
+    Args:
+        g1_nodes, g2_nodes: node embeddings (N1, D), (N2, D)
+        g1_adj, g2_adj: adjacency (N1, N1), (N2, N2)
+        alpha: balance between feature (1-α) and structure (α)
+        reg: entropy regularization ε
+    
+    Returns:
+        FGW distance (scalar tensor, differentiable)
+    """
+    try:
+        # POT/FGW is numerically more stable in float32 than low-precision dtypes.
+        g1_nodes = torch.nan_to_num(g1_nodes.float(), nan=0.0, posinf=1e4, neginf=-1e4)
+        g2_nodes = torch.nan_to_num(g2_nodes.float(), nan=0.0, posinf=1e4, neginf=-1e4)
+        g1_adj = torch.nan_to_num(g1_adj.float(), nan=0.0, posinf=1.0, neginf=0.0)
+        g2_adj = torch.nan_to_num(g2_adj.float(), nan=0.0, posinf=1.0, neginf=0.0)
+
+        if (not torch.isfinite(g1_nodes).all()) or (not torch.isfinite(g2_nodes).all()):
+            return torch.tensor(1e-3, device=g1_nodes.device, dtype=torch.float32)
+
+        # 1. Feature cost matrix M
+        M = ot.dist(g1_nodes, g2_nodes, metric='sqeuclidean')
+        M = M / (M.max() + 1e-9)  # normalize
+
+        # 2. Uniform marginals
+        n1, n2 = g1_nodes.shape[0], g2_nodes.shape[0]
+        p1 = torch.ones(n1, device=g1_nodes.device, dtype=g1_nodes.dtype) / n1
+        p2 = torch.ones(n2, device=g2_nodes.device, dtype=g2_nodes.dtype) / n2
+
+        # 3. Entropic FGW (POT backend handles gradient)
+        fgw_dist = ot.gromov.entropic_fused_gromov_wasserstein2(
+            M, g1_adj, g2_adj, p1, p2,
+            alpha=alpha,
+            epsilon=reg,
+            loss_fun='square_loss',
+            symmetric=True,
+            max_iter=300,
+            tol=1e-6,
+            verbose=False
+        )
+
+        # Ensure tensor output
+        if not torch.is_tensor(fgw_dist):
+            fgw_dist = torch.tensor(fgw_dist, device=g1_nodes.device, dtype=torch.float32)
+
+        fgw_dist = torch.nan_to_num(fgw_dist, nan=1e-3, posinf=10.0, neginf=0.0)
+        if not torch.isfinite(fgw_dist):
+            return torch.tensor(1e-3, device=g1_nodes.device, dtype=torch.float32)
+        
+        return fgw_dist
+    except Exception as e:
+        # Fallback: return small penalty to avoid gradient issues
+        return torch.tensor(1e-3, device=g1_nodes.device, dtype=torch.float32)
+
+
+class SparseRouter(nn.Module):
+    """
+    Noisy Top-1 Router (Switch Transformer style).
+    
+    Math: p(e|x) = softmax(W·x + noise)
+    Top-1: dispatch x to expert e* = argmax p(e|x)
+    
+    Noise prevents router collapse during training.
+    """
+    def __init__(self, in_dim, num_experts, noise_eps=1e-2):
+        super().__init__()
+        self.linear = nn.Linear(in_dim, num_experts)
+        self.noise_eps = noise_eps
+        self.num_experts = num_experts
+
+    def forward(self, x, training=True):
+        """
+        Args:
+            x: input features (B, in_dim)
+            training: add noise only during training
+        Returns:
+            logits: raw scores (B, num_experts)
+            top_idx: selected expert indices (B,)
+        """
+        logits = self.linear(x)
+        
+        # Add Gaussian noise during training (exploration)
+        if training:
+            noise = torch.randn_like(logits) * self.noise_eps
+            logits = logits + noise
+        
+        # Top-1 hard routing
+        _, top_idx = logits.topk(1, dim=-1)
+        return logits, top_idx.squeeze(-1)
+
+
+# ==========================================
+# 3. MOE-GRAPH MODEL (Core Architecture)
+# ==========================================
+class GraphTransformerLayer(nn.Module):
+    """Transformer block with graph-constrained self-attention."""
+    def __init__(self, dim, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm1 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 4, dim),
+        )
+        self.norm2 = nn.LayerNorm(dim)
+
+    def forward(self, x, attn_mask):
+        y, _ = self.attn(x, x, x, attn_mask=attn_mask, need_weights=False)
+        x = self.norm1(x + y)
+        x = self.norm2(x + self.ffn(x))
+        return x
+
+
+class GraphExpert(nn.Module):
+    """
+    Graph Expert: Graph Attention Transformer for encoding entity pair subgraphs.
+
+    Each expert learns to process a specific cluster of graph patterns,
+    while attention is constrained by graph adjacency.
+    """
+    def __init__(self, in_dim, hidden_dim, out_dim, num_layers=2, num_heads=4, dropout=0.1):
+        super().__init__()
+        del hidden_dim
+        self.out_dim = out_dim
+        self.in_proj = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
+        self.layers = nn.ModuleList([
+            GraphTransformerLayer(out_dim, num_heads=num_heads, dropout=dropout)
+            for _ in range(num_layers)
+        ])
+
+    def _fallback(self, pair_repr_i, dtype, device):
+        out_dim2 = self.out_dim * 2
+        if pair_repr_i.shape[-1] >= out_dim2:
+            return pair_repr_i[:out_dim2].to(device=device, dtype=dtype)
+        pad = torch.zeros(out_dim2 - pair_repr_i.shape[-1], device=device, dtype=dtype)
+        return torch.cat([pair_repr_i.to(device=device, dtype=dtype), pad], dim=-1)
+        
+    def forward(self, g, h, pair_repr):
+        """
+        Args:
+            g: batched DGL graph
+            h: node features (num_nodes, in_dim)
+            pair_repr: context features (for potential skip connection)
+        Returns:
+            pair_embedding: (batch_size, out_dim*2) [h_final, t_final]
+        """
+        h = self.in_proj(h)
+        graphs = dgl.unbatch(g)
+        sizes = g.batch_num_nodes().tolist()
+        out = []
+        offset = 0
+
+        for i, (sg, n) in enumerate(zip(graphs, sizes)):
+            if n <= 0:
+                out.append(self._fallback(pair_repr[i], h.dtype, pair_repr.device))
+                continue
+
+            x = h[offset:offset + n].unsqueeze(0)
+            offset += n
+
+            src, dst = sg.edges()
+            attn_mask = torch.ones((n, n), device=x.device, dtype=torch.bool)
+            if src.numel() > 0:
+                attn_mask[src.long(), dst.long()] = False
+            else:
+                attn_mask.fill_(False)
+
+            for layer in self.layers:
+                x = layer(x, attn_mask)
+            x = x.squeeze(0)
+
+            is_ht = sg.ndata['is_ht'].bool()
+            ht_nodes = x[is_ht]
+            if ht_nodes.shape[0] >= 2:
+                out.append(torch.cat([ht_nodes[0], ht_nodes[1]], dim=-1))
+            elif ht_nodes.shape[0] == 1:
+                out.append(torch.cat([ht_nodes[0], ht_nodes[0]], dim=-1))
+            else:
+                out.append(self._fallback(pair_repr[i], x.dtype, pair_repr.device))
+
+        if len(out) != pair_repr.shape[0]:
+            return torch.stack([
+                self._fallback(pair_repr[i], h.dtype, pair_repr.device)
+                for i in range(pair_repr.shape[0])
+            ], dim=0)
+        return torch.stack(out, dim=0).to(pair_repr.device)
+
+class MoEGraphRE(nn.Module):
+    """
+    Mixture-of-Experts Graph Relation Extraction Model.
+    
+    Pipeline: LLM embeddings → Entity pairs → Graph construction → Sparse MoE → Relation classifier
+    
+    MoE learns: p(r|h,t,D) = Σ_e p(e|h,t,D) · p(r|h,t,D,e)
+             Router ≈ posterior expert selection
+             Expert ≈ conditional graph encoder
+    """
+    def __init__(self, llm_model, num_relations, num_experts=4, expert_dim=128, noise_scale=1e-2, capacity_factor=1.25, graph_device='cpu'):
+        super().__init__()
+        self.llm = llm_model
+        self.num_experts = num_experts
+        self.expert_dim = expert_dim
+        self.noise_scale = noise_scale
+        self.capacity_factor = capacity_factor
+        self.graph_device = graph_device
+        
+        hidden_size = llm_model.config.hidden_size
+        
+        # Experts: specialized graph encoders
+        self.experts = nn.ModuleList([
+            GraphExpert(hidden_size, expert_dim, expert_dim) 
+            for _ in range(num_experts)
+        ])
+        
+        # Router: learns p(expert | entity_pair_context)
+        self.router = SparseRouter(hidden_size * 2, num_experts, noise_eps=noise_scale)
+        
+        # Classifier: final relation predictor
+        self.classifier = nn.Sequential(
+            nn.Linear(expert_dim * 2, expert_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(expert_dim, num_relations)
+        )
+        
+    def forward(self, subgraphs, pair_features):
+        """
+        Sparse MoE Forward Pass (Switch-style conditional computation).
+        
+        Args:
+            subgraphs: batched DGL graph (B entity pair subgraphs)
+            pair_features: (B, hidden_size*2) concatenated [h_embed, t_embed]
+        
+        Returns:
+            logits: relation logits (B, num_relations)
+            router_logits: routing scores (B, num_experts)
+            top1_idx: selected expert per sample (B,)
+            pair_emb: expert-composed pair representation (B, expert_dim*2)
+        """
+        # Keep MoE path in fp32 for stable autograd under DDP + quantized LLM outputs.
+        dtype = torch.float32
+        device = pair_features.device
+        pair_features = pair_features.to(dtype)
+        batch_size = pair_features.shape[0]
+        
+        # Ensure correct dtype
+        self.experts.to(dtype)
+        self.router.to(dtype)
+        self.classifier.to(dtype)
+        
+        # Step 1: Router - Select top-1 expert per sample
+        router_logits, top1_idx = self.router(pair_features, training=self.training)
+
+        # Step 2: Compute gating weights (for gradient flow)
+        probs = F.softmax(router_logits, dim=-1)
+        top1_prob = probs.gather(1, top1_idx.unsqueeze(-1)).squeeze(-1)
+
+        # Step 3: Dispatch & Execute experts (capacity-limited)
+        graph_list = dgl.unbatch(subgraphs)
+        # DGL may be CPU-only even when the rest of the model runs on CUDA.
+        graph_list = [g.to(self.graph_device) for g in graph_list]
+        # Gradient-safe default path: even if a sample is dropped by capacity or hits
+        # expert fallback, the loss still has a valid autograd path to pair_features.
+        out_dim = self.expert_dim * 2
+        if pair_features.shape[-1] >= out_dim:
+            pair_emb = pair_features[:, :out_dim].clone()
+        else:
+            pad = torch.zeros(
+                (batch_size, out_dim - pair_features.shape[-1]),
+                device=device,
+                dtype=dtype,
+            )
+            pair_emb = torch.cat([pair_features, pad], dim=-1)
+        
+        # Capacity: max tokens per expert (prevents overload)
+        capacity = max(1, int(math.ceil(self.capacity_factor * batch_size / self.num_experts)))
+        
+        for e_idx in range(self.num_experts):
+            # Find samples routed to expert e_idx
+            mask = (top1_idx == e_idx)
+            selected_indices = mask.nonzero(as_tuple=True)[0]
+            
+            if selected_indices.numel() == 0:
+                continue  # Skip unused expert
+
+            # Apply capacity limit (drop lowest priority if overflow)
+            if selected_indices.numel() > capacity:
+                sel_probs = top1_prob[selected_indices]
+                _, top_k = torch.topk(sel_probs, k=capacity)
+                selected_indices = selected_indices[top_k]
+                
+            # Prepare sub-batch for this expert
+            e_pair_feats = pair_features[selected_indices]
+            e_graphs = dgl.batch([graph_list[i] for i in selected_indices.tolist()])
+            
+            # Ensure graph is on selected graph device (DGL batch may not preserve device)
+            e_graphs = e_graphs.to(self.graph_device)
+            
+            # Execute ONLY this expert (conditional computation)
+            # Experts consume graph features on graph device; output is moved back to pair device.
+            e_out = self.experts[e_idx](
+                e_graphs,
+                e_graphs.ndata['h'].to(device=self.graph_device, dtype=dtype),
+                e_pair_feats.to(device=self.graph_device, dtype=dtype),
+            ).to(device)
+            
+            # Combine back (weighted by router confidence)
+            pair_emb[selected_indices] = e_out * top1_prob[selected_indices].unsqueeze(-1)
+            
+        # Step 4: Final classification
+        logits = self.classifier(pair_emb)
+        return logits, router_logits, top1_idx, pair_emb
 
 
 def _unwrap_model(m):
@@ -1379,7 +1438,36 @@ def _all_reduce_scalar(value, device):
     t = t / dist.get_world_size()
     return float(t.item())
 
-
+def switch_load_balance_loss(router_logits, top_idx, num_experts):
+    """
+    Switch Load Balancing Loss (variance-based).
+    
+    Ensures experts are utilized uniformly:
+    - Importance: router's soft assignment (what it wants to use)
+    - Load: actual hard assignment (what gets used)
+    
+    Loss = Var(importance) + Var(load)
+    
+    This prevents router collapse where all samples go to 1-2 experts.
+    """
+    # Soft assignment (differentiable)
+    probs = F.softmax(router_logits.float(), dim=-1)  # (B, E)
+    importance = probs.sum(0)  # (E,)
+    
+    # Hard assignment (actual dispatch)
+    load = torch.bincount(top_idx, minlength=num_experts).float().to(router_logits.device)
+    
+    # Normalize and compute variance
+    importance_norm = importance / (importance.sum() + 1e-9)
+    load_norm = load / (load.sum() + 1e-9)
+    
+    importance_loss = torch.var(importance_norm)
+    load_loss = torch.var(load_norm)
+    
+    out = importance_loss + load_loss
+    if not torch.isfinite(out):
+        return torch.zeros((), device=router_logits.device, dtype=router_logits.dtype)
+    return out.to(router_logits.dtype)
 
 # ==========================================
 # 4. EVALUATION FUNCTION
@@ -1544,7 +1632,7 @@ def evaluate(input_dir, output_dir):
         output_file.close()
 
 
-def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id2rel, debug=False, debug_samples=10, batch_size=1, oracle=False, dump_path=None, candidate_gen=None, use_pair_markers=False, e1_id=None, e2_id=None, candidate_keep_ratio=0.3, threshold_scale=1.0, max_pairs_per_doc=50, args_max_length=1024, result_output_path=None, print_infer_sample=False, tail_buckets=None, train_facts_annotated=None, train_facts_distant=None, mixed_precision=True, tta_bidirectional=True, tta_single_direction_penalty=0.5, evidence_threshold=0.5, evidence_topk=3):
+def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id2rel, debug=False, debug_samples=10, batch_size=1, oracle=False, dump_path=None, candidate_gen=None, use_pair_markers=False, e1_id=None, e2_id=None, candidate_keep_ratio=0.3, threshold_scale=1.0, max_pairs_per_doc=50, args_max_length=1024, result_output_path=None, print_infer_sample=False, tail_buckets=None, train_facts_annotated=None, train_facts_distant=None):
     core_model = _unwrap_model(model)
     core_model.eval()
     pred_facts = set()
@@ -1556,15 +1644,11 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
     
     eval_data = dev_data[:debug_samples] if debug else dev_data
     eval_collate = functools.partial(collate_fn, tokenizer=tokenizer, max_length=args_max_length)
-    use_cuda_eval = device.startswith('cuda')
     dataloader = DataLoader(
         DocREDDataset(eval_data),
         batch_size=1,
         shuffle=False,
-        num_workers=4,
-        pin_memory=use_cuda_eval,
-        persistent_workers=True,
-        prefetch_factor=2,
+        num_workers=0,
         collate_fn=eval_collate,
     )
     
@@ -1574,14 +1658,8 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
             batch = move_batch_to_device(batch, device)
             item = batch['items'][0]
             encodings = batch['encodings']
-            # A8: bf16 autocast for LLM forward on CUDA; downstream (GNN) stays fp32.
-            with torch.autocast(
-                device_type=device.split(':')[0],
-                dtype=torch.bfloat16,
-                enabled=(use_cuda_eval and bool(mixed_precision)),
-            ):
-                outputs = core_model.llm(**encodings, output_hidden_states=True)
-            doc_embeds = outputs.hidden_states[-1][0].float()
+            outputs = core_model.llm(**encodings, output_hidden_states=True)
+            doc_embeds = outputs.hidden_states[-1][0]
             w_ids = encodings.word_ids(batch_index=0)
             
             vertex_set = item.get('vertex_set', item.get('vertexSet', []))
@@ -1609,157 +1687,75 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
             doc_results = {"doc_id": item.get('title', 'unknown'), "entity_pairs": []}
             pair_batch_size = 10
             decision_threshold = min(0.95, max(0.05, 0.5 * float(threshold_scale)))
-
-            # A4: precompute pair-marker features once per doc via span pooling.
-            doc_marker_feats = None
-            doc_marker_mask = None
-            pair_to_idx = {pair: idx for idx, pair in enumerate(entity_pairs)}
-            if use_pair_markers:
-                doc_marker_feats, doc_marker_mask = compute_pair_marker_features_from_doc(
-                    doc_embeds, w_ids, item, entity_pairs
-                )
-
-            # B3 + B11: per-doc sentence embeddings for the evidence head.
-            sent_embeds = compute_sentence_embeddings(doc_embeds, w_ids, item)
-            evidence_head_avail = (
-                hasattr(core_model, 'evidence_head')
-                and sent_embeds.shape[0] > 0
-            )
-
-            # Doc-level accumulators (deferred emission for B7 bidirectional merging).
-            doc_prob_map = {}          # (h, t, rel_id) -> sigmoid prob
-            doc_evi_probs = {}         # (h, t) -> np.array(S,) evidence prob per sentence
-
             for p_start in range(0, len(entity_pairs), pair_batch_size):
                 p_end = min(p_start + pair_batch_size, len(entity_pairs))
                 batch_pairs = entity_pairs[p_start:p_end]
                 subgraphs, pair_features = [], []
-                h_only_feats, t_only_feats = [], []
-                path_infos = []
                 marker_feats = None
                 marker_mask = None
-                if use_pair_markers and doc_marker_feats is not None:
-                    batch_idx = torch.tensor(
-                        [pair_to_idx[p] for p in batch_pairs], device=doc_marker_feats.device
-                    )
-                    marker_feats = torch.index_select(doc_marker_feats, 0, batch_idx)
-                    marker_mask = torch.index_select(doc_marker_mask, 0, batch_idx)
+                if use_pair_markers:
+                    pair_items = build_pair_batch_items(item, batch_pairs)
+                    pair_enc = collate_fn(pair_items, tokenizer, max_length=args_max_length)['encodings'].to(device)
+                    pair_out = core_model.llm(**pair_enc, output_hidden_states=True)
+                    marker_feats, marker_mask = extract_marker_pair_features(pair_out, pair_enc, e1_id, e2_id)
                 for h_idx, t_idx in batch_pairs:
-                    g, _, _, path_info = graph_builder.build_pair_subgraph(item, doc_embeds, w_ids, h_idx, t_idx)
+                    g, _, _, _ = graph_builder.build_pair_subgraph(item, doc_embeds, w_ids, h_idx, t_idx)
                     subgraphs.append(g)
-                    path_infos.append(path_info)
                     ht_feats = g.ndata['h'][g.ndata['is_ht'].bool()]
                     h_f, t_f = (ht_feats[0], ht_feats[1]) if ht_feats.shape[0] >= 2 else (ht_feats[0], ht_feats[0])
                     pair_features.append(torch.cat([h_f, t_f]))
-                    h_only_feats.append(h_f)
-                    t_only_feats.append(t_f)
 
                 if use_pair_markers and marker_feats is not None:
                     for idx in range(len(pair_features)):
                         if marker_mask[idx]:
                             marker_vec = marker_feats[idx].to(pair_features[idx].device)
                             pair_features[idx] = 0.5 * pair_features[idx] + 0.5 * marker_vec
-
-                logits = core_model(dgl.batch(subgraphs), torch.stack(pair_features).to(device), path_infos)[0]
-
-                # Type-constrained soft mask (B1)
-                type_mask = build_type_soft_mask(batch_pairs, vertex_set, rel2id, device)
-                logits = logits + type_mask
-
-                probs_tensor = torch.sigmoid(logits.float())
-                probs_batch = probs_tensor.cpu().numpy()
-
+                
+                logits, _, _, _ = core_model(dgl.batch(subgraphs), torch.stack(pair_features).to(device))
+                preds_tensor, probs_tensor, _ = predict_multi_label_relations(
+                    logits,
+                    threshold=decision_threshold,
+                )
+                probs_batch = probs_tensor.float().cpu().numpy()
+                preds_batch = preds_tensor.cpu().numpy().astype(bool)
+                
                 for j, pair in enumerate(batch_pairs):
-                    for rel_id in range(probs_batch.shape[1]):
-                        doc_prob_map[(int(pair[0]), int(pair[1]), int(rel_id))] = float(probs_batch[j, rel_id])
+                    pred_rel_ids = np.where(preds_batch[j])[0].tolist()
+                    for rel_id in pred_rel_ids:
+                        pred_facts.add((doc_idx, int(pair[0]), int(pair[1]), int(rel_id)))
+                        pred_item = {
+                            "title": item.get('title', 'unknown'),
+                            "h_idx": int(pair[0]),
+                            "t_idx": int(pair[1]),
+                            "r": id2rel[int(rel_id)],
+                            "evidence": infer_pair_evidence_sent_ids(item, int(pair[0]), int(pair[1])),
+                        }
+                        infer_results.append(pred_item)
+                        if print_infer_sample and not printed_output_sample:
+                            print("[INFER-DEBUG] Output sample after inference:")
+                            print(json.dumps(pred_item, ensure_ascii=False))
+                            printed_output_sample = True
 
-                # B11: evidence head predictions per pair (sentence relevance).
-                if evidence_head_avail:
-                    h_batch_t = torch.stack(h_only_feats).to(device)
-                    t_batch_t = torch.stack(t_only_feats).to(device)
-                    evi_logits_b = core_model.evidence_head(h_batch_t, t_batch_t, sent_embeds)
-                    evi_probs_b = torch.sigmoid(evi_logits_b).float().cpu().numpy()
-                    for j, pair in enumerate(batch_pairs):
-                        doc_evi_probs[(int(pair[0]), int(pair[1]))] = evi_probs_b[j]
+                    if print_infer_sample and not printed_input_sample:
+                        sample_input = {
+                            "title": item.get('title', 'unknown'),
+                            "h_idx": int(pair[0]),
+                            "t_idx": int(pair[1]),
+                            "r": "NA",
+                            "evidence": infer_pair_evidence_sent_ids(item, int(pair[0]), int(pair[1])),
+                        }
+                        print("[INFER-DEBUG] Input sample before inference:")
+                        print(json.dumps(sample_input, ensure_ascii=False))
+                        printed_input_sample = True
 
-            # B7: bidirectional probability merging + emission.
-            def _inverse_rel_id(rel_id):
-                rel_name = id2rel.get(int(rel_id), "")
-                if rel_name in SYMMETRIC_RELATIONS:
-                    return int(rel_id)
-                for a, b in INVERSE_PAIRS:
-                    if rel_name == a and b in rel2id:
-                        return int(rel2id[b])
-                    if rel_name == b and a in rel2id:
-                        return int(rel2id[a])
-                return None
-
-            def _evidence_for_pair(h, t):
-                evi_arr = doc_evi_probs.get((h, t))
-                if evi_arr is None or len(evi_arr) == 0:
-                    return infer_pair_evidence_sent_ids(item, h, t)
-                above = [(i, float(p)) for i, p in enumerate(evi_arr) if float(p) >= float(evidence_threshold)]
-                above.sort(key=lambda x: -x[1])
-                if not above and len(evi_arr) > 0:
-                    above = [(int(evi_arr.argmax()), float(evi_arr.max()))]
-                return [i for i, _ in above[: max(1, int(evidence_topk))]]
-
-            pair_pred_rel_ids = defaultdict(list)
-            for (h, t, rel_id), prob in doc_prob_map.items():
-                inv_rel_id = _inverse_rel_id(rel_id)
-                if tta_bidirectional and inv_rel_id is not None:
-                    inv_prob = float(doc_prob_map.get((t, h, inv_rel_id), 0.0))
-                    if prob >= decision_threshold and inv_prob >= decision_threshold:
-                        merged = 0.5 * (prob + inv_prob)
-                    else:
-                        merged = max(prob, inv_prob) * float(tta_single_direction_penalty)
-                    keep = merged >= decision_threshold
-                else:
-                    keep = prob >= decision_threshold
-
-                if not keep:
-                    continue
-
-                pred_facts.add((doc_idx, int(h), int(t), int(rel_id)))
-                pair_pred_rel_ids[(int(h), int(t))].append(int(rel_id))
-                pred_item = {
-                    "title": item.get('title', 'unknown'),
-                    "h_idx": int(h),
-                    "t_idx": int(t),
-                    "r": id2rel[int(rel_id)],
-                    "evidence": _evidence_for_pair(int(h), int(t)),
-                }
-                infer_results.append(pred_item)
-                if print_infer_sample and not printed_output_sample:
-                    print("[INFER-DEBUG] Output sample after inference:")
-                    print(json.dumps(pred_item, ensure_ascii=False))
-                    printed_output_sample = True
-
-            if print_infer_sample and not printed_input_sample and entity_pairs:
-                first_pair = entity_pairs[0]
-                sample_input = {
-                    "title": item.get('title', 'unknown'),
-                    "h_idx": int(first_pair[0]),
-                    "t_idx": int(first_pair[1]),
-                    "r": "NA",
-                    "evidence": _evidence_for_pair(int(first_pair[0]), int(first_pair[1])),
-                }
-                print("[INFER-DEBUG] Input sample before inference:")
-                print(json.dumps(sample_input, ensure_ascii=False))
-                printed_input_sample = True
-
-            if len(dump_results) < 5:
-                for pair in entity_pairs:
-                    pred_rel_ids = pair_pred_rel_ids.get((int(pair[0]), int(pair[1])), [])
-                    if not pred_rel_ids and not pair_to_rels.get(pair):
-                        continue
-                    gold_rel_ids = sorted(pair_to_rels.get(pair, set()))
-                    doc_results["entity_pairs"].append({
-                        "h": vertex_set[pair[0]][0]['name'],
-                        "t": vertex_set[pair[1]][0]['name'],
-                        "gold": [id2rel[g] for g in gold_rel_ids],
-                        "pred": [id2rel[p] for p in pred_rel_ids],
-                    })
+                    if len(dump_results) < 5:
+                        gold_rel_ids = sorted(pair_to_rels.get(pair, set()))
+                        doc_results["entity_pairs"].append({
+                            "h": vertex_set[pair[0]][0]['name'],
+                            "t": vertex_set[pair[1]][0]['name'],
+                            "gold": [id2rel[g] for g in gold_rel_ids],
+                            "pred": [id2rel[p] for p in pred_rel_ids],
+                        })
             if doc_results["entity_pairs"]:
                 dump_results.append(doc_results)
 
@@ -1774,26 +1770,6 @@ def evaluate_model(model, tokenizer, dev_data, graph_builder, rel2id, device, id
     if print_infer_sample and not printed_output_sample:
         print("[INFER-DEBUG] Output sample after inference:")
         print(json.dumps({"title": "N/A", "h_idx": -1, "t_idx": -1, "r": "NA", "evidence": []}, ensure_ascii=False))
-
-    # Symmetric relation post-processing (B6) — skip when B7 bidirectional merging is on,
-    # because B7 already considers both directions and naive expansion would undo its
-    # single-direction penalty.
-    if not tta_bidirectional:
-        extra_facts = set()
-        for doc_idx, h, t, rel_id in pred_facts:
-            rel_name = id2rel.get(int(rel_id), "")
-            if rel_name in SYMMETRIC_RELATIONS:
-                extra_facts.add((doc_idx, t, h, rel_id))
-            for a, b in INVERSE_PAIRS:
-                if rel_name == a:
-                    inv_id = rel2id.get(b)
-                    if inv_id is not None:
-                        extra_facts.add((doc_idx, t, h, inv_id))
-                elif rel_name == b:
-                    inv_id = rel2id.get(a)
-                    if inv_id is not None:
-                        extra_facts.add((doc_idx, t, h, inv_id))
-        pred_facts = pred_facts.union(extra_facts)
 
     precision, recall, f1 = compute_fact_f1(pred_facts, gold_facts)
     long_tail_metrics = compute_long_tail_metrics(
@@ -1871,7 +1847,7 @@ def main():
     hf_home = _ensure_stable_hf_cache_dir()
     print(f"[HF] Using cache root: {hf_home}")
 
-    parser = argparse.ArgumentParser(description="DocRE with SP-GAT + DS + Stochastic Path Pruning")
+    parser = argparse.ArgumentParser(description="DocRE with Sparse MoE + DS + Structural Contrastive Learning")
     parser.add_argument(
         '--stage',
         type=str,
@@ -1884,11 +1860,11 @@ def main():
     parser.add_argument('--debug-train-samples', type=int, default=20)
     parser.add_argument('--debug-prototype-samples', type=int, default=5)
     parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--lora-epochs', type=int, default=2, help='Epochs for LoRA-only phase (freeze GNN). 0 disables this phase.')
-    parser.add_argument('--gnn-epochs', type=int, default=-1, help='Epochs for GNN phase (freeze LLM). -1 falls back to --epochs.')
+    parser.add_argument('--lora-epochs', type=int, default=2, help='Epochs for LoRA-only phase (freeze GNN/prototypes). 0 disables this phase.')
+    parser.add_argument('--gnn-epochs', type=int, default=-1, help='Epochs for GNN/prototype phase (freeze LLM). -1 falls back to --epochs.')
     parser.add_argument('--lr-lora', type=float, default=5e-5, help='Learning rate for LoRA phase.')
     parser.add_argument('--lr-gnn', type=float, default=5e-5, help='Learning rate for GNN phase.')
-    parser.add_argument('--batch-size', type=int, default=16, help='Pair mini-batch size per document (default doubled from 2 to 4 for better GPU utilization).')
+    parser.add_argument('--batch-size', type=int, default=4, help='Pair mini-batch size per document (default doubled from 2 to 4 for better GPU utilization).')
     parser.add_argument('--num-workers', type=int, default=8, help='DataLoader worker processes per rank.')
 
     # Subset controls (default is NOT full, even in train/inference)
@@ -1898,14 +1874,6 @@ def main():
     parser.add_argument('--build-distant-clean', action='store_true', help='Build cleaned DS file before training.')
     parser.add_argument('--distant-topk', type=int, default=2, help='MIL top-k instances kept per (h,t) bag in DS cleaning.')
     parser.add_argument('--distant-mix-ratio', type=float, default=0.3, help='Ratio of cleaned DS docs mixed into supervised train set.')
-    parser.add_argument('--distant-mix-schedule', action='store_true', help='Enable confidence-weighted DS: mix ratio stays fixed but loss weight decays by epoch.')
-    parser.add_argument('--ds-weight-max', type=float, default=1.0, help='Max DS loss weight at start of training.')
-    parser.add_argument('--ds-weight-min', type=float, default=0.0, help='Min DS loss weight at end of training.')
-    parser.add_argument('--augment-ratio', type=float, default=0.0, help='Ratio of train docs to augment via T5 paraphrase. 0 disables augmentation.')
-    parser.add_argument('--augment-sent-prob', type=float, default=0.5, help='Per-sentence paraphrase probability during augmentation.')
-    parser.add_argument('--augment-model', type=str, default='humarin/chatgpt_paraphraser_on_T5_base', help='T5 model for paraphrase augmentation.')
-    parser.add_argument('--augment-device', type=str, default='cpu', help='Device for T5 paraphrase model (cpu recommended to save GPU memory).')
-    parser.add_argument('--augment-cache', type=str, default='train_annotated_aug.json', help='Cache file for augmented dataset.')
     parser.add_argument('--eval-file', type=str, default='dev.json', help='Path to validation/eval JSON (DocRED format).')
     parser.add_argument('--test-file', type=str, default='dev.json', help='Optional path to test JSON. If provided, runs a final test evaluation after training.')
     parser.add_argument('--train-val-ratio', type=float, default=0.8, help='Train split ratio when splitting --train-file into new train/val sets (e.g., 0.8 => 8:2).')
@@ -1925,36 +1893,28 @@ def main():
     parser.add_argument('--allow-cpu-large-model', action='store_true', help='Allow loading large models on CPU (may be extremely slow / OOM).')
     parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cpu', 'cuda'], help='Device selection. auto uses CUDA only if both torch and DGL support it; otherwise falls back to CPU.')
     
-    # SP-GAT hyperparameters
-    parser.add_argument('--beta-sparsity', type=float, default=0.001, help='Sparsity loss weight')
-    parser.add_argument('--sparsity-warmup-epochs', type=int, default=3, help='Linear warmup epochs for sparsity loss weight.')
-    parser.add_argument('--mixed-precision', action='store_true', default=True, help='Use bfloat16 autocast for LLM and classifier (GNN stays fp32).')
-    parser.add_argument('--gnn-num-layers', type=int, default=4, help='Number of GAT layers (recommended 4).')
-    parser.add_argument('--stochastic-depth-rate', type=float, default=0.1, help='Stochastic depth drop rate for GAT layers.')
+    # MoE hyperparameters
+    parser.add_argument('--num-experts', type=int, default=3, help='Number of graph experts')
+    parser.add_argument('--capacity-factor', type=float, default=1.25, help='Expert capacity multiplier')
+    parser.add_argument('--lambda-moe', type=float, default=0.1, help='Switch load balance loss weight')
+    
+    # Structural contrastive alignment hyperparameters
+    parser.add_argument('--lambda-scl', type=float, default=0.05, help='Structural contrastive loss weight')
+    parser.add_argument('--scl-temp', type=float, default=0.1, help='InfoNCE temperature for SCL')
 
     # Candidate filtering + multi-label threshold
-    parser.add_argument('--candidate-keep-ratio', type=float, default=0.5, help='EP-RSR style keep ratio after fast pair filtering.')
-    parser.add_argument('--adaptive-threshold-scale', type=float, default=0.8, help='Scale factor applied to base sigmoid threshold (base=0.5) during evaluation.')
+    parser.add_argument('--candidate-keep-ratio', type=float, default=0.3, help='EP-RSR style keep ratio after fast pair filtering.')
+    parser.add_argument('--adaptive-threshold-scale', type=float, default=0.6, help='Scale factor applied to base sigmoid threshold (base=0.5) during evaluation.')
 
     # Classification loss + optimizer
     parser.add_argument('--focal-gamma', type=float, default=2.0, help='Focal loss gamma.')
-    parser.add_argument('--focal-alpha', type=float, default=0.75, help='Focal loss alpha weight for positive labels.')
+    parser.add_argument('--focal-alpha', type=float, default=0.25, help='Focal loss alpha weight for positive labels.')
     parser.add_argument('--weight-decay', type=float, default=0.01, help='Weight decay for ADOPT optimizer.')
     parser.add_argument('--adopt-beta1', type=float, default=0.9, help='ADOPT beta1.')
     parser.add_argument('--adopt-beta2', type=float, default=0.9999, help='ADOPT beta2.')
     parser.add_argument('--adopt-eps', type=float, default=1e-6, help='ADOPT epsilon.')
     parser.add_argument('--neg-pos-ratio', type=float, default=3.0, help='Target negative-to-positive ratio per document for pair training.')
     parser.add_argument('--neg-buffer', type=int, default=5, help='Extra negative pairs sampled per document.')
-
-    # Evidence supervision (B3 attention-distillation + B11 sentence-as-evidence multi-task)
-    parser.add_argument('--lambda-evidence', type=float, default=0.1, help='Weight on evidence auxiliary loss (BCE + KL). 0 disables the evidence head.')
-    parser.add_argument('--evidence-kl-weight', type=float, default=1.0, help='Weight on the KL attention-distillation term inside evidence loss.')
-    parser.add_argument('--evidence-threshold', type=float, default=0.5, help='Sigmoid threshold for selecting evidence sentences at inference.')
-    parser.add_argument('--evidence-topk', type=int, default=3, help='Max evidence sentences kept per predicted (h,t,r) at inference.')
-
-    # Test-time augmentation (B7): bidirectional probability merging
-    parser.add_argument('--tta-bidirectional', action='store_true', default=True, help='Merge (h,t,r) and (t,h,inv(r)) scores at inference.')
-    parser.add_argument('--tta-single-direction-penalty', type=float, default=0.5, help='Multiplier applied when only one direction has a confident score (B7).')
     
     # Early stopping parameters
     parser.add_argument('--patience', type=int, default=5, help='Number of epochs to wait for F1 improvement before stopping.')
@@ -1973,7 +1933,7 @@ def main():
         default='',
         help='Optional pretrained GNN checkpoint source. Supports local file path, W&B artifact ref (entity/project/name:version), or W&B artifact URL.',
     )
-    parser.add_argument('--pretrained-gnn-strict', action='store_true', default=True, help='Load pretrained GNN checkpoint with strict key matching.')
+    parser.add_argument('--pretrained-gnn-strict', action='store_true', help='Load pretrained GNN checkpoint with strict key matching.')
 
     parser.add_argument('--no-wandb', action='store_true')
     parser.add_argument('--wandb-project', type=str, default='', help='Override W&B project name. Empty uses Config.wandb_project.')
@@ -2248,7 +2208,7 @@ def main():
         DEVICE = f'cuda:{local_rank}' if distributed else 'cuda:0'
         if not dgl_cuda_ok:
             if rank == 0:
-                print("[WARN] DGL CUDA backend not available. Running SP-GAT on CPU and keeping LLM/classifier on CUDA.")
+                print("[WARN] DGL CUDA backend not available. Running GraphExpert on CPU and keeping LLM/router/classifier on CUDA.")
     else:
         # auto
         if torch.cuda.is_available():
@@ -2682,8 +2642,8 @@ def main():
     # LoRA: Parameter-efficient fine-tuning on attention weights
     # Choose target modules based on backbone architecture.
     module_names = [name for name, _ in base_model.named_modules()]
-    if any(n.endswith('q_proj') for n in module_names) and any(n.endswith('v_proj') for n in module_names) and any(n.endswith('k_proj') for n in module_names):
-        target_modules = ["q_proj", "v_proj", "k_proj"]
+    if any(n.endswith('q_proj') for n in module_names) and any(n.endswith('v_proj') for n in module_names):
+        target_modules = ["q_proj", "v_proj"]
     elif any(n.endswith('c_attn') for n in module_names):
         target_modules = ["c_attn"]
     else:
@@ -2695,8 +2655,8 @@ def main():
             base_model,
             LoraConfig(
                 task_type=TaskType.FEATURE_EXTRACTION,
-                r=32,
-                lora_alpha=256,
+                r=8,
+                lora_alpha=32,
                 target_modules=target_modules,
             ),
         )
@@ -2708,39 +2668,21 @@ def main():
                 print("[WARN] LoRA target modules found but peft is unavailable; proceeding without LoRA.")
         lora_model = base_model
     
-    # SP-GAT Graph RE Model
-    model = SPGATRE(
+    # MoE Graph RE Model with Sparse Experts
+    model = MoEGraphRE(
         lora_model,
         num_relations,
-        num_layers=args.gnn_num_layers,
-        num_heads=4,
-        d_head=128,
-        d_e=32,
-        d_d=16,
-        d_p=64,
-        num_edge_types=10,
-        dropout=0.1,
+        num_experts=args.num_experts,
+        capacity_factor=args.capacity_factor,
         graph_device=graph_device,
-        stochastic_depth_rate=args.stochastic_depth_rate,
-    )
-    if graph_device != DEVICE and DEVICE.startswith('cuda'):
-        # Hybrid mode: keep GNN/PathEncoder on CPU (DGL CUDA unavailable),
-        # move LLM + classifier to GPU.
-        model.llm = model.llm.to(DEVICE)
-        model.classifier = model.classifier.to(DEVICE)
-        if rank == 0:
-            print(f"[HYBRID] GNN/PathEncoder on {graph_device}, LLM/Classifier on {DEVICE}")
-    else:
-        model = model.to(DEVICE)
-        if rank == 0:
-            print(f"[MODEL] All modules on {DEVICE} | Graph storage on {graph_device}")
+    ).to(DEVICE)
 
-    # B3 + B11: evidence supervision head (per-pair, per-sentence). Attached before DDP wrap
-    # so its parameters are visible to all ranks and the optimizer.
-    llm_hidden_dim = int(model.llm.config.hidden_size)
-    model.evidence_head = EvidenceHead(hidden_dim=llm_hidden_dim).to(DEVICE)
-    if rank == 0:
-        print(f"[EVIDENCE] EvidenceHead attached | hidden_dim={llm_hidden_dim}")
+    if graph_device == 'cpu':
+        model.experts = model.experts.to('cpu')
+    
+    # Learnable relation prototypes for structural contrastive alignment.
+    prototype_dim = model.expert_dim * 2
+    prototypes = RelationPrototype(num_relations, prototype_dim).to(DEVICE)
 
     def _load_checkpoint_into_modules(checkpoint_path, strict=False):
         ckpt = torch.load(checkpoint_path, map_location=DEVICE)
@@ -2762,41 +2704,27 @@ def main():
                     f"[PRETRAIN] {prefix} load report: missing={len(missing)} unexpected={len(unexpected)}"
                 )
 
-        def _try_rename(state_dict):
-            rename_map = {
-                "gnn.layers.": "gat_layers.",
-                "gnn.layer_norms.": "layer_norms.",
-                "gnn.path_encoder.": "path_encoder.",
-                "gnn.pair_reasoning.": "pair_reasoning.",
-                "gnn.classifier.": "classifier.",
-            }
-            renamed = {}
-            for k, v in state_dict.items():
-                new_k = k
-                for old_p, new_p in rename_map.items():
-                    new_k = new_k.replace(old_p, new_p)
-                renamed[new_k] = v
-            return renamed
-
         if "model_state_dict" in ckpt:
-            state_dict = ckpt["model_state_dict"]
-            if strict:
-                state_dict = _try_rename(state_dict)
-            # Strict load, but tolerate genuinely new heads added after the checkpoint
-            # (e.g. evidence_head from B3/B11) — they get random init.
-            result = model.load_state_dict(state_dict, strict=False)
-            if strict:
-                missing = list(getattr(result, "missing_keys", []))
-                unexpected = list(getattr(result, "unexpected_keys", []))
-                ALLOW_MISSING_PREFIXES = ("evidence_head.",)
-                hard_missing = [k for k in missing if not k.startswith(ALLOW_MISSING_PREFIXES)]
-                if hard_missing or unexpected:
-                    raise RuntimeError(
-                        f"[PRETRAIN] Strict load mismatch: missing={hard_missing} unexpected={unexpected}"
-                    )
-                if missing and rank == 0:
-                    print(f"[PRETRAIN] Allowed-missing keys (new heads): {missing}")
+            result = model.load_state_dict(ckpt["model_state_dict"], strict=bool(strict))
             _report("full model", result)
+            loaded_any = True
+        else:
+            if "experts_state_dict" in ckpt:
+                result = model.experts.load_state_dict(ckpt["experts_state_dict"], strict=bool(strict))
+                _report("experts", result)
+                loaded_any = True
+            if "router_state_dict" in ckpt:
+                result = model.router.load_state_dict(ckpt["router_state_dict"], strict=bool(strict))
+                _report("router", result)
+                loaded_any = True
+            if "classifier_state_dict" in ckpt:
+                result = model.classifier.load_state_dict(ckpt["classifier_state_dict"], strict=bool(strict))
+                _report("classifier", result)
+                loaded_any = True
+
+        if "prototype_state_dict" in ckpt:
+            result = prototypes.load_state_dict(ckpt["prototype_state_dict"], strict=bool(strict))
+            _report("prototypes", result)
             loaded_any = True
 
         return loaded_any
@@ -2814,21 +2742,29 @@ def main():
             raise RuntimeError(
                 f"[PRETRAIN] Loaded checkpoint but no compatible keys were applied: {resolved_path}"
             )
-        print(f"[PRETRAIN] Loaded pretrained SP-GAT checkpoint from: {resolved_path}")
+        print(f"[PRETRAIN] Loaded pretrained GNN checkpoint from: {resolved_path}")
 
     if distributed:
         model = DDP(
             model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=False,
+            find_unused_parameters=True,
         )
 
-
+    if distributed:
+        prototypes = DDP(
+            prototypes,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
+        )
     
     # Verify all modules are on CPU
     if rank == 0:
         print(f"Model device: {next(model.parameters()).device}")
+        print(f"Prototypes device: {next(prototypes.parameters()).device}")
+    
     graph_builder = DocREDGraphBuilder(graph_device)
     candidate_gen = CandidateGenerator()
     def _set_module_requires_grad(module, flag):
@@ -2838,9 +2774,10 @@ def main():
     def _configure_training_phase(phase_name):
         """Set trainable parameters by phase and create matching optimizer."""
         core = _unwrap_model(model)
+        proto_core = _unwrap_model(prototypes)
 
         if phase_name == 'lora':
-            # LoRA phase: train adapter weights only, freeze GNN.
+            # LoRA phase: train adapter weights only, freeze GNN + prototypes.
             lora_trainable = 0
             for n, p in core.llm.named_parameters():
                 is_lora = ('lora_' in n)
@@ -2848,27 +2785,25 @@ def main():
                 if is_lora:
                     lora_trainable += 1
 
-            _set_module_requires_grad(core.gat_layers, False)
-            _set_module_requires_grad(core.path_encoder, False)
+            _set_module_requires_grad(core.experts, False)
+            _set_module_requires_grad(core.router, False)
             _set_module_requires_grad(core.classifier, False)
+            _set_module_requires_grad(proto_core, False)
             phase_lr = args.lr_lora
             if rank == 0:
                 print(f"[PHASE] LoRA phase active | trainable_lora_tensors={lora_trainable} | lr={phase_lr}")
         else:
-            # GNN phase: freeze LLM and train SP-GAT + classifier.
+            # GNN phase: freeze LLM and train graph experts/router/classifier + prototypes.
             _set_module_requires_grad(core.llm, False)
-            _set_module_requires_grad(core.gat_layers, True)
-            _set_module_requires_grad(core.path_encoder, True)
+            _set_module_requires_grad(core.experts, True)
+            _set_module_requires_grad(core.router, True)
             _set_module_requires_grad(core.classifier, True)
+            _set_module_requires_grad(proto_core, True)
             phase_lr = args.lr_gnn
             if rank == 0:
                 print(f"[PHASE] GNN phase active | lr={phase_lr}")
 
-        # Evidence head stays trainable in both phases (B3 + B11 auxiliary supervision).
-        if hasattr(core, 'evidence_head'):
-            _set_module_requires_grad(core.evidence_head, True)
-
-        trainable = [p for p in model.parameters() if p.requires_grad]
+        trainable = [p for p in list(model.parameters()) + list(prototypes.parameters()) if p.requires_grad]
         if not trainable:
             raise RuntimeError(f"No trainable parameters found for phase={phase_name}")
         if ADOPTOptimizer is None:
@@ -2895,74 +2830,6 @@ def main():
         )
     else:
         split_train_data, split_val_data = None, None
-
-    # -------- T5 Paraphrase Augmentation (only on train split) --------
-    if (split_train_data is not None) and (args.augment_ratio > 0.0) and (DocParaphraser is not None):
-        if os.path.exists(args.augment_cache):
-            try:
-                with open(args.augment_cache, 'r') as f:
-                    aug_docs = json.load(f)
-                if rank == 0:
-                    print(f"[AUG] Loaded cached augmented docs: {len(aug_docs)} from {args.augment_cache}")
-            except Exception as e:
-                if rank == 0:
-                    print(f"[AUG] Failed to load cache: {e}. Re-generating.")
-                aug_docs = None
-        else:
-            aug_docs = None
-
-        if aug_docs is None:
-            if rank == 0:
-                print(f"[AUG] Generating T5 paraphrase augmentation (ratio={args.augment_ratio}, sent_prob={args.augment_sent_prob}) ...")
-                para = DocParaphraser(model_name=args.augment_model, device=args.augment_device)
-                aug_docs = para.augment_dataset(
-                    split_train_data,
-                    ratio=args.augment_ratio,
-                    augment_sent_prob=args.augment_sent_prob,
-                )
-                # Simple entity-presence filter
-                filtered = []
-                for aug_doc in aug_docs:
-                    # Find original doc by title
-                    orig = None
-                    for d in split_train_data:
-                        if d.get('title') == aug_doc.get('title'):
-                            orig = d
-                            break
-                    if orig is not None and quick_entity_presence_filter(orig, aug_doc):
-                        filtered.append(aug_doc)
-                aug_docs = filtered
-                try:
-                    with open(args.augment_cache, 'w') as f:
-                        json.dump(aug_docs, f)
-                except Exception as e:
-                    if rank == 0:
-                        print(f"[AUG] Failed to write cache: {e}")
-                print(f"[AUG] Augmented docs after filter: {len(aug_docs)}")
-            else:
-                aug_docs = []
-
-        if distributed:
-            # Broadcast aug_docs from rank 0 to all ranks
-            import torch.distributed as dist
-            if rank == 0:
-                buf = json.dumps(aug_docs)
-                size = torch.tensor(len(buf), dtype=torch.int64, device=DEVICE)
-            else:
-                size = torch.tensor(0, dtype=torch.int64, device=DEVICE)
-            dist.broadcast(size, src=0)
-            if rank == 0:
-                buf_tensor = torch.ByteTensor(list(buf.encode('utf-8'))).to(DEVICE)
-            else:
-                buf_tensor = torch.ByteTensor(size.item()).to(DEVICE)
-            dist.broadcast(buf_tensor, src=0)
-            if rank != 0:
-                aug_docs = json.loads(bytes(buf_tensor.cpu().tolist()).decode('utf-8'))
-
-        if aug_docs:
-            split_train_data = split_train_data + aug_docs
-            if rank == 0:
-                print(f"[AUG] Appended {len(aug_docs)} augmented docs to train split")
 
     train_pool = split_train_data if split_train_data is not None else train_data
     val_pool = split_val_data if split_val_data is not None else dev_data
@@ -3008,12 +2875,9 @@ def main():
         try:
             distant_clean = load_json_robust(args.distant_clean_file)
             mix_n = max(1, int(len(train_data_subset) * float(args.distant_mix_ratio)))
-            mixed_ds = _subset(distant_clean, mix_n, full=False)
-            for d in mixed_ds:
-                d["__is_distant"] = True
-            train_data_subset = train_data_subset + mixed_ds
+            train_data_subset = train_data_subset + _subset(distant_clean, mix_n, full=False)
             if rank == 0:
-                print(f"[DS] Mixed {len(mixed_ds)} cleaned DS docs into supervised training set")
+                print(f"[DS] Mixed {min(mix_n, len(distant_clean))} cleaned DS docs into supervised training set")
         except Exception as e:
             if rank == 0:
                 print(f"[WARN] Failed to mix cleaned DS data: {e}")
@@ -3042,14 +2906,12 @@ def main():
 
     train_rel_freq = compute_relation_frequency(train_data_subset, rel2id)
     tail_buckets = build_tail_buckets(train_rel_freq)
-    pos_weight = compute_pos_weights_from_freq(train_rel_freq, clamp_min=1.0, clamp_max=10.0)
     if rank == 0:
         non_zero = int(np.sum(train_rel_freq > 0))
         print(
             f"[LONG-TAIL] Seen relations in train: {non_zero}/{len(rel2id)} "
             f"| buckets head={len(tail_buckets['head'])} medium={len(tail_buckets['medium'])} tail={len(tail_buckets['tail'])}"
         )
-        print(f"[LONG-TAIL] pos_weight range: {pos_weight.min():.2f} ~ {pos_weight.max():.2f}")
 
     if overfit_one_doc or overfit_stage:
         # Overfit is a logic check: typically needs more epochs, but don't override user choice.
@@ -3059,31 +2921,12 @@ def main():
         args.lr_gnn = 1e-4
 
     train_dataset = DocREDDataset(train_data_subset)
-    if distributed:
-        train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    else:
-        # Re-balanced batch sampler by inverse sqrt of min relation freq per doc (B12)
-        doc_weights = []
-        for item in train_data_subset:
-            labels = item.get('labels', [])
-            rels_in_doc = set()
-            for lbl in labels:
-                rel = lbl.get('r')
-                if rel in rel2id:
-                    rels_in_doc.add(rel2id[rel])
-            if not rels_in_doc:
-                doc_weights.append(1.0)
-            else:
-                min_freq = min(train_rel_freq[r] for r in rels_in_doc)
-                weight = 1.0 / math.sqrt(max(1, min_freq))
-                doc_weights.append(weight)
-        from torch.utils.data import WeightedRandomSampler
-        train_sampler = WeightedRandomSampler(doc_weights, num_samples=len(doc_weights), replacement=True)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if distributed else None
     train_collate = functools.partial(collate_fn, tokenizer=tokenizer, max_length=args.max_seq_length)
     train_loader = DataLoader(
         train_dataset,
         batch_size=1,
-        shuffle=False,
+        shuffle=(train_sampler is None),
         sampler=train_sampler,
         num_workers=max(0, int(args.num_workers)),
         pin_memory=use_cuda,
@@ -3112,16 +2955,6 @@ def main():
     phase = 'lora' if lora_epochs > 0 else 'gnn'
     optimizer = _configure_training_phase(phase)
 
-    # Linear schedule with warmup (A7)
-    total_train_steps = total_epochs * len(train_loader)
-    warmup_steps = int(0.06 * total_train_steps)
-    if get_linear_schedule_with_warmup is not None:
-        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_train_steps)
-    else:
-        scheduler = None
-    if rank == 0 and scheduler is not None:
-        print(f"[SCHEDULER] linear warmup steps={warmup_steps} / total={total_train_steps}")
-
     best_f1 = -1
     epochs_no_improve = 0
     best_epoch = -1
@@ -3133,10 +2966,13 @@ def main():
         return {
             "epoch": int(epoch),
             "best_val_f1": float(best_val_f1),
-            "model_state_dict": core_model.state_dict(),
+            "experts_state_dict": core_model.experts.state_dict(),
+            "router_state_dict": core_model.router.state_dict(),
+            "classifier_state_dict": core_model.classifier.state_dict(),
+            "prototype_state_dict": _unwrap_model(prototypes).state_dict(),
             "args": vars(args),
             "run_name": str(run_name),
-            "checkpoint_format": "spgat_full",
+            "checkpoint_format": "compact_no_llm_backbone",
         }
 
     def _safe_save_checkpoint(payload, output_path, compact_builder=None):
@@ -3184,8 +3020,19 @@ def main():
             return False
         ckpt = torch.load(checkpoint_path, map_location=DEVICE)
         core_model = _unwrap_model(model)
+        proto_model = _unwrap_model(prototypes)
+
         if "model_state_dict" in ckpt:
             core_model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        else:
+            if "experts_state_dict" in ckpt:
+                core_model.experts.load_state_dict(ckpt["experts_state_dict"], strict=False)
+            if "router_state_dict" in ckpt:
+                core_model.router.load_state_dict(ckpt["router_state_dict"], strict=False)
+            if "classifier_state_dict" in ckpt:
+                core_model.classifier.load_state_dict(ckpt["classifier_state_dict"], strict=False)
+        if "prototype_state_dict" in ckpt:
+            proto_model.load_state_dict(ckpt["prototype_state_dict"], strict=False)
         return True
 
     for epoch in range(total_epochs):
@@ -3193,24 +3040,11 @@ def main():
         if target_phase != phase:
             phase = target_phase
             optimizer = _configure_training_phase(phase)
-            if get_linear_schedule_with_warmup is not None:
-                scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_train_steps)
-            else:
-                scheduler = None
 
-        if train_sampler is not None and hasattr(train_sampler, 'set_epoch'):
+        if train_sampler is not None:
             train_sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
-
-        # Confidence-weighted DS schedule
-        if args.distant_mix_schedule and total_epochs > 1:
-            progress = epoch / max(1, total_epochs - 1)
-            lambda_t = max(args.ds_weight_min, args.ds_weight_max * (1.0 - progress))
-        else:
-            lambda_t = 1.0
-        if rank == 0 and args.distant_mix_schedule:
-            print(f"[SCHEDULE] Epoch {epoch} DS loss weight lambda={lambda_t:.3f}")
 
         for i, batch in enumerate(train_loader):
             batch = move_batch_to_device(batch, DEVICE)
@@ -3218,19 +3052,9 @@ def main():
             item = batch['items'][0]
             core_model = _unwrap_model(model)
 
-            # Layer 1-2: LLM Encoder (frozen + LoRA) → Entity mention embeddings.
-            # A8: run LLM under bf16 autocast; GNN/classifier stay in fp32 outside this block.
-            with torch.autocast(
-                device_type=DEVICE.split(':')[0],
-                dtype=torch.bfloat16,
-                enabled=(use_cuda and args.mixed_precision),
-            ):
-                doc_emb = core_model.llm(**enc, output_hidden_states=True).hidden_states[-1][0]
-            doc_emb = doc_emb.float()
+            # Layer 1-2: LLM Encoder (frozen + LoRA) → Entity mention embeddings
+            doc_emb = core_model.llm(**enc, output_hidden_states=True).hidden_states[-1][0]
             w_ids = enc.word_ids(0)
-
-            # B3 + B11: sentence-level embeddings, cached once per doc for the evidence head.
-            sent_embeds = compute_sentence_embeddings(doc_emb, w_ids, item)
 
             vertex_set = item.get('vertex_set', item.get('vertexSet', []))
             candidates = candidate_gen.generate_candidates(item, vertex_set)
@@ -3251,25 +3075,7 @@ def main():
             pos = [p for p in candidates if p in pair_to_rels]
             neg = [p for p in candidates if p not in pair_to_rels]
             neg_budget = int(max(0.0, float(args.neg_pos_ratio)) * len(pos)) + max(0, int(args.neg_buffer))
-            # Type-aware negative sampling (A11)
-            if neg_budget > 0 and neg:
-                type_matched_neg = [p for p in neg if _pair_matches_any_type_constraint(p, vertex_set)]
-                type_unmatched_neg = [p for p in neg if not _pair_matches_any_type_constraint(p, vertex_set)]
-                # Sample 60% from type-matched, 40% from unmatched (or all if not enough)
-                n_type = min(len(type_matched_neg), int(0.6 * neg_budget))
-                n_random = min(len(type_unmatched_neg), neg_budget - n_type)
-                sampled_neg = []
-                if n_type > 0:
-                    sampled_neg.extend(random.sample(type_matched_neg, n_type))
-                if n_random > 0:
-                    sampled_neg.extend(random.sample(type_unmatched_neg, n_random))
-                # If still short, fill with remaining negatives
-                if len(sampled_neg) < neg_budget:
-                    remaining = [p for p in neg if p not in sampled_neg]
-                    if remaining:
-                        sampled_neg.extend(random.sample(remaining, min(len(remaining), neg_budget - len(sampled_neg))))
-            else:
-                sampled_neg = []
+            sampled_neg = random.sample(neg, min(len(neg), neg_budget)) if neg_budget > 0 else []
             train_p = pos + sampled_neg
             random.shuffle(train_p)
 
@@ -3278,146 +3084,97 @@ def main():
 
             optimizer.zero_grad()
             doc_loss = 0.0
-            num_accum = 0
-
-            # A4: compute pair-marker features once via span pooling on cached doc_emb.
-            doc_marker_feats = None
-            doc_marker_mask = None
-            pair_to_idx = {pair: idx for idx, pair in enumerate(train_p)}
-            if use_pair_markers:
-                doc_marker_feats, doc_marker_mask = compute_pair_marker_features_from_doc(
-                    doc_emb, w_ids, item, train_p
-                )
 
             # Layer 3: Pair subgraph construction (k-hop neighborhoods)
+            # Doc-level loader stays at 1; this is the true compute batch on pair subgraphs.
             pair_batch_size = max(1, args.batch_size)
-            p_s = 0
-            while p_s < len(train_p):
+            for p_s in range(0, len(train_p), pair_batch_size):
                 p_e = min(p_s + pair_batch_size, len(train_p))
                 b_p = train_p[p_s:p_e]
                 b_l = build_multi_hot_targets(b_p, pair_to_rels, num_relations, DEVICE)
-                sgs, path_infos, p_f = [], [], []
-                h_only_feats, t_only_feats = [], []
-                try:
-                    for h, t in b_p:
-                        g, _, _, path_info = graph_builder.build_pair_subgraph(item, doc_emb, w_ids, h, t)
-                        sgs.append(g)
-                        path_infos.append(path_info)
-                        ht = g.ndata['h'][g.ndata['is_ht'].bool()]
-                        h_f, t_f = (ht[0], ht[1]) if ht.shape[0] >= 2 else (ht[0], ht[0])
-                        p_f.append(torch.cat([h_f, t_f]))
-                        h_only_feats.append(h_f)
-                        t_only_feats.append(t_f)
-
-                    if use_pair_markers and doc_marker_feats is not None:
-                        for idx, pair in enumerate(b_p):
-                            pair_idx = pair_to_idx[pair]
-                            if doc_marker_mask[pair_idx]:
-                                marker_vec = doc_marker_feats[pair_idx].to(p_f[idx].device)
-                                p_f[idx] = 0.5 * p_f[idx] + 0.5 * marker_vec
-
-                    logits, pi = model(dgl.batch(sgs), torch.stack(p_f).to(DEVICE), path_infos)
-
-                    # Type-constrained soft mask (B1)
-                    type_mask = build_type_soft_mask(b_p, vertex_set, rel2id, DEVICE)
-                    logits = logits + type_mask
-
-                    # Loss 1: Focal multi-label loss for long-tail relations.
-                    cls_loss = focal_loss_with_logits(
-                        logits,
-                        b_l.float(),
-                        gamma=args.focal_gamma,
-                        alpha=args.focal_alpha,
-                        pos_weight=pos_weight,
-                        reduction="sum_pos",
-                    )
-
-                    # Loss 2: Sparsity regularization (Stochastic Path Pruning)
-                    sparsity = sparsity_loss(pi, p0=0.1)
-
-                    # Confidence-weighted DS: decay DS contribution over epochs
-                    ds_weight = lambda_t if item.get("__is_distant") else 1.0
-
-                    # Sparsity linear warmup (A5)
-                    beta_t = args.beta_sparsity if epoch >= args.sparsity_warmup_epochs else (args.beta_sparsity * max(1, epoch) / max(1, args.sparsity_warmup_epochs))
-
-                    # Loss 3: B3 attention-distillation + B11 BCE per-sentence on evidence.
-                    # Always run evidence_head so DDP (find_unused_parameters=False) sees its
-                    # params used; mask the loss when lambda=0 or for distant-supervision docs
-                    # (their evidence is unreliable).
-                    if sent_embeds.shape[0] > 0:
-                        h_batch = torch.stack(h_only_feats).to(DEVICE)
-                        t_batch = torch.stack(t_only_feats).to(DEVICE)
-                        evi_logits = core_model.evidence_head(h_batch, t_batch, sent_embeds)
-                        if float(args.lambda_evidence) > 0.0 and not item.get("__is_distant"):
-                            evi_targets, has_evi = build_evidence_targets(
-                                b_p, item.get('labels', []), sent_embeds.shape[0], DEVICE
-                            )
-                            evi_loss = evidence_loss_fn(
-                                evi_logits, evi_targets, has_evi, kl_weight=float(args.evidence_kl_weight)
-                            )
-                        else:
-                            # Keep evi_logits in graph but contribute zero loss.
-                            evi_loss = evi_logits.sum() * 0.0
-                    else:
-                        evi_loss = doc_emb.new_zeros(())
-
-                    # Total Loss = ds_weight * L_CE + β_t * L_sparsity + λ_evi * L_evidence
-                    batch_loss = ds_weight * cls_loss + beta_t * sparsity + float(args.lambda_evidence) * evi_loss
-
-                    if not torch.isfinite(batch_loss):
-                        if rank == 0:
-                            print(f"[WARN] Non-finite batch loss at epoch={epoch}, doc={i}, pair_range=({p_s},{p_e}). Skipping batch.")
-                        p_s = p_e
-                        continue
-
-                    if not batch_loss.requires_grad:
-                        if rank == 0:
-                            print(f"[WARN] Loss has no grad_fn at epoch={epoch}, doc={i}, pair_range=({p_s},{p_e}); skipping this pair-batch.")
-                        p_s = p_e
-                        continue
-
-                    batch_loss.backward()
-                    doc_loss += float(batch_loss.item())
-                    num_accum += 1
-
-                    # Clear memory after backward pass
-                    del batch_loss, cls_loss, sparsity, evi_loss, logits, pi, sgs
+                sgs, adjs, p_f = [], [], []
+                marker_feats = None
+                marker_mask = None
+                if use_pair_markers:
+                    pair_items = build_pair_batch_items(item, b_p)
+                    pair_enc = collate_fn(pair_items, tokenizer, max_length=args.max_seq_length)['encodings'].to(DEVICE)
+                    pair_out = core_model.llm(**pair_enc, output_hidden_states=True)
+                    marker_feats, marker_mask = extract_marker_pair_features(pair_out, pair_enc, e1_id, e2_id)
+                    # Free memory immediately after marker extraction
+                    del pair_out, pair_enc
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                    p_s = p_e
-                except Exception as exc:
-                    msg = str(exc).lower()
-                    is_oom = isinstance(exc, torch.cuda.OutOfMemoryError) or ("out of memory" in msg)
-                    if not is_oom:
-                        raise
-                    if pair_batch_size <= 1:
-                        raise
+                for h, t in b_p:
+                    g, adj, _, _ = graph_builder.build_pair_subgraph(item, doc_emb, w_ids, h, t)
+                    sgs.append(g)
+                    adjs.append(adj)
+                    ht = g.ndata['h'][g.ndata['is_ht'].bool()]
+                    h_f, t_f = (ht[0], ht[1]) if ht.shape[0]>=2 else (ht[0], ht[0])
+                    p_f.append(torch.cat([h_f, t_f]))
+
+                if use_pair_markers and marker_feats is not None:
+                    for idx in range(len(p_f)):
+                        if marker_mask[idx]:
+                            marker_vec = marker_feats[idx].to(p_f[idx].device)
+                            p_f[idx] = 0.5 * p_f[idx] + 0.5 * marker_vec
+
+                logits, router_logits, top_idx, pair_repr = model(dgl.batch(sgs), torch.stack(p_f).to(DEVICE))
+
+                # Loss 1: Focal multi-label loss for long-tail relations.
+                cls_loss = focal_loss_with_logits(
+                    logits,
+                    b_l.float(),
+                    gamma=args.focal_gamma,
+                    alpha=args.focal_alpha,
+                    reduction="mean",
+                )
+
+                # Loss 2: Switch Load Balancing (expert utilization)
+                switch_loss = switch_load_balance_loss(router_logits, top_idx, core_model.num_experts)
+
+                # Loss 3: Structural Contrastive Learning (InfoNCE) with relation prototypes
+                scl_loss = structural_contrastive_loss(
+                    pair_repr,
+                    b_l,
+                    _unwrap_model(prototypes),
+                    temperature=args.scl_temp,
+                )
+
+                # Total Loss = L_CE + λ_moe * L_balance + λ_scl * L_scl
+                batch_loss = cls_loss + args.lambda_moe * switch_loss + args.lambda_scl * scl_loss
+
+                if not torch.isfinite(batch_loss):
                     if rank == 0:
-                        print(f"[OOM] Reducing pair batch size from {pair_batch_size} to {max(1, pair_batch_size // 2)} at epoch={epoch}, doc={i}.")
+                        print(f"[WARN] Non-finite batch loss at epoch={epoch}, doc={i}, pair_range=({p_s},{p_e}). Skipping batch.")
                     optimizer.zero_grad(set_to_none=True)
-                    num_accum = 0
-                    doc_loss = 0.0
-                    pair_batch_size = max(1, pair_batch_size // 2)
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    continue
 
-            if num_accum > 0:
-                grad_params = []
-                for g in optimizer.param_groups:
-                    grad_params.extend(g['params'])
-                grad_norm = torch.nn.utils.clip_grad_norm_(grad_params, max_norm=args.grad_clip_norm)
-                if torch.isfinite(grad_norm):
-                    optimizer.step()
-                    if scheduler is not None:
-                        scheduler.step()
-                else:
+                if not batch_loss.requires_grad:
                     if rank == 0:
-                        print(f"[WARN] Non-finite grad norm at epoch={epoch}, doc={i}. Skipping optimizer step.")
+                        print(f"[WARN] Loss has no grad_fn at epoch={epoch}, doc={i}, pair_range=({p_s},{p_e}); skipping this pair-batch.")
+                    continue
+
+                batch_loss.backward(retain_graph=(p_e < len(train_p)))
+                doc_loss += float(batch_loss.item())
+                
+                # Clear memory after backward pass
+                del batch_loss, cls_loss, switch_loss, scl_loss, logits, router_logits, pair_repr, sgs, adjs
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            grad_params = []
+            for g in optimizer.param_groups:
+                grad_params.extend(g['params'])
+            grad_norm = torch.nn.utils.clip_grad_norm_(grad_params, max_norm=args.grad_clip_norm)
+            if not torch.isfinite(grad_norm):
+                if rank == 0:
+                    print(f"[WARN] Non-finite grad norm at epoch={epoch}, doc={i}. Skipping optimizer step.")
                 optimizer.zero_grad(set_to_none=True)
-                epoch_loss += doc_loss
-                if rank == 0 and i % 10 == 0:
-                    print(f"E {epoch} ({phase}) | D {i} | L: {epoch_loss / (i + 1):.4f}")
+                continue
+
+            optimizer.step()
+            epoch_loss += doc_loss
+            if rank == 0 and i % 10 == 0:
+                print(f"E {epoch} ({phase}) | D {i} | L: {epoch_loss / (i + 1):.4f}")
 
         avg_train_loss = epoch_loss / max(1, len(train_loader))
         avg_train_loss = _all_reduce_scalar(avg_train_loss, DEVICE)
@@ -3447,11 +3204,6 @@ def main():
                 tail_buckets=tail_buckets,
                 train_facts_annotated=train_facts_annotated,
                 train_facts_distant=train_facts_distant,
-                mixed_precision=bool(args.mixed_precision),
-                tta_bidirectional=bool(args.tta_bidirectional),
-                tta_single_direction_penalty=float(args.tta_single_direction_penalty),
-                evidence_threshold=float(args.evidence_threshold),
-                evidence_topk=int(args.evidence_topk),
             )
             eval_f1 = float(eval_metrics.get('f1', 0.0))
             print(f"Epoch {epoch} F1: {eval_f1:.4f}")
@@ -3509,6 +3261,7 @@ def main():
                     "epoch": int(epoch),
                     "best_val_f1": float(best_f1),
                     "model_state_dict": _unwrap_model(model).state_dict(),
+                    "prototype_state_dict": _unwrap_model(prototypes).state_dict(),
                     "args": vars(args),
                     "run_name": str(run_name),
                 }
@@ -3550,11 +3303,6 @@ def main():
                     tail_buckets=tail_buckets,
                     train_facts_annotated=train_facts_annotated,
                     train_facts_distant=train_facts_distant,
-                    mixed_precision=bool(args.mixed_precision),
-                    tta_bidirectional=bool(args.tta_bidirectional),
-                    tta_single_direction_penalty=float(args.tta_single_direction_penalty),
-                    evidence_threshold=float(args.evidence_threshold),
-                    evidence_topk=int(args.evidence_topk),
                 )
                 best_test_f1 = float(best_test_metrics.get('f1', 0.0)) if best_test_metrics else 0.0
                 _upload_inference_json_to_wandb(best_ckpt_result_path, artifact_name=f"{safe_run_name}_best_ckpt_result")
@@ -3604,11 +3352,6 @@ def main():
             tail_buckets=tail_buckets,
             train_facts_annotated=train_facts_annotated,
             train_facts_distant=train_facts_distant,
-            mixed_precision=bool(args.mixed_precision),
-            tta_bidirectional=bool(args.tta_bidirectional),
-            tta_single_direction_penalty=float(args.tta_single_direction_penalty),
-            evidence_threshold=float(args.evidence_threshold),
-            evidence_topk=int(args.evidence_topk),
         )
         best_test_f1 = float(best_test_metrics.get('f1', 0.0)) if best_test_metrics else 0.0
         _upload_inference_json_to_wandb(best_ckpt_result_path, artifact_name=f"{safe_run_name}_best_ckpt_result_final")
